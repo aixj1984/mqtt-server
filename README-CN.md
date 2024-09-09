@@ -4,8 +4,8 @@
     
 ![build status](https://github.com/mochi-mqtt/server/actions/workflows/build.yml/badge.svg) 
 [![Coverage Status](https://coveralls.io/repos/github/mochi-mqtt/server/badge.svg?branch=master&v2)](https://coveralls.io/github/mochi-mqtt/server?branch=master)
-[![Go Report Card](https://goreportcard.com/badge/github.com/mochi-mqtt/server)](https://goreportcard.com/report/github.com/mochi-mqtt/server/v2)
-[![Go Reference](https://pkg.go.dev/badge/github.com/mochi-mqtt/server.svg)](https://pkg.go.dev/github.com/mochi-mqtt/server/v2)
+[![Go Report Card](https://goreportcard.com/badge/github.com/mochi-mqtt/server)](https://goreportcard.com/report/github.com/aixj1984/mqtt-server)
+[![Go Reference](https://pkg.go.dev/badge/github.com/mochi-mqtt/server.svg)](https://pkg.go.dev/github.com/aixj1984/mqtt-server)
 [![contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg?style=flat)](https://github.com/mochi-mqtt/server/issues)
 
 </p>
@@ -127,9 +127,9 @@ options:
 import (
   "log"
 
-  mqtt "github.com/mochi-mqtt/server/v2"
-  "github.com/mochi-mqtt/server/v2/hooks/auth"
-  "github.com/mochi-mqtt/server/v2/listeners"
+  mqtt "github.com/aixj1984/mqtt-server"
+  "github.com/aixj1984/mqtt-server/hooks/auth"
+  "github.com/aixj1984/mqtt-server/listeners"
 )
 
 func main() {
