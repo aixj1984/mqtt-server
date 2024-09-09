@@ -957,6 +957,7 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 			ack.Payload = pk.Payload
 			ack.TopicName = pk.TopicName
 		}
+		s.Log.Debug("processPublish  OnQosComplete")
 		s.hooks.OnQosComplete(cl, ack)
 	}
 
@@ -1162,6 +1163,7 @@ func (s *Server) processPuback(cl *Client, pk packets.Packet) error {
 	if ok := cl.State.Inflight.Delete(pk.PacketID); ok { // [MQTT-4.3.2-5]
 		cl.State.Inflight.IncreaseSendQuota()
 		atomic.AddInt64(&s.Info.Inflight, -1)
+		s.Log.Debug("processPuback  OnQosComplete")
 		s.hooks.OnQosComplete(cl, pk)
 	}
 
@@ -1214,6 +1216,7 @@ func (s *Server) processPubrel(cl *Client, pk packets.Packet) error {
 	cl.State.Inflight.IncreaseSendQuota()                // +1 SENT QUOTA
 	if ok := cl.State.Inflight.Delete(pk.PacketID); ok { // [MQTT-4.3.3-12]
 		atomic.AddInt64(&s.Info.Inflight, -1)
+		s.Log.Debug("processPubrel  OnQosComplete")
 		s.hooks.OnQosComplete(cl, pk)
 	}
 
@@ -1227,6 +1230,7 @@ func (s *Server) processPubcomp(cl *Client, pk packets.Packet) error {
 	cl.State.Inflight.IncreaseSendQuota()    // +1 SENT QUOTA
 	if ok := cl.State.Inflight.Delete(pk.PacketID); ok {
 		atomic.AddInt64(&s.Info.Inflight, -1)
+		s.Log.Debug("processPubcomp  OnQosComplete")
 		s.hooks.OnQosComplete(cl, pk)
 	}
 
