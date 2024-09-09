@@ -9,8 +9,8 @@ import (
 	"os"
 	"testing"
 
-	mqtt "github.com/mochi-mqtt/server/v2"
-	"github.com/mochi-mqtt/server/v2/packets"
+	mqtt "github.com/aixj1984/mqtt-server"
+	"github.com/aixj1984/mqtt-server/packets"
 	"github.com/stretchr/testify/require"
 )
 

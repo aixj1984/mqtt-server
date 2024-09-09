@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mochi-mqtt/server/v2/hooks/storage"
-	"github.com/mochi-mqtt/server/v2/listeners"
-	"github.com/mochi-mqtt/server/v2/packets"
-	"github.com/mochi-mqtt/server/v2/system"
+	"github.com/aixj1984/mqtt-server/hooks/storage"
+	"github.com/aixj1984/mqtt-server/listeners"
+	"github.com/aixj1984/mqtt-server/packets"
+	"github.com/aixj1984/mqtt-server/system"
 
 	"github.com/stretchr/testify/require"
 )

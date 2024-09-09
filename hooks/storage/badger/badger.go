@@ -11,11 +11,11 @@ import (
 	"strings"
 	"time"
 
+	mqtt "github.com/aixj1984/mqtt-server"
+	"github.com/aixj1984/mqtt-server/hooks/storage"
+	"github.com/aixj1984/mqtt-server/packets"
+	"github.com/aixj1984/mqtt-server/system"
 	badgerdb "github.com/dgraph-io/badger/v4"
-	mqtt "github.com/mochi-mqtt/server/v2"
-	"github.com/mochi-mqtt/server/v2/hooks/storage"
-	"github.com/mochi-mqtt/server/v2/packets"
-	"github.com/mochi-mqtt/server/v2/system"
 )
 
 const (
@@ -492,7 +492,6 @@ func (h *Hook) StoredSysInfo() (v storage.SystemInfo, err error) {
 // Errorf satisfies the badger interface for an error logger.
 func (h *Hook) Errorf(m string, v ...any) {
 	h.Log.Error(fmt.Sprintf(strings.ToLower(strings.Trim(m, "\n")), v...), "v", v)
-
 }
 
 // Warningf satisfies the badger interface for a warning logger.
@@ -527,7 +526,6 @@ func (h *Hook) delKv(k string) error {
 	err := h.db.Update(func(txn *badgerdb.Txn) error {
 		return txn.Delete([]byte(k))
 	})
-
 	if err != nil {
 		h.Log.Error("failed to delete data", "error", err, "key", k)
 	}
@@ -558,7 +556,6 @@ func (h *Hook) iterKv(prefix string, visit func([]byte) error) error {
 		for iterator.Seek([]byte(prefix)); iterator.ValidForPrefix([]byte(prefix)); iterator.Next() {
 			item := iterator.Item()
 			value, err := item.ValueCopy(nil)
-
 			if err != nil {
 				return err
 			}
