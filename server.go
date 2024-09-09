@@ -8,6 +8,7 @@ package mqtt
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"net"
 	"os"
@@ -22,8 +23,6 @@ import (
 	"github.com/mochi-mqtt/server/v2/listeners"
 	"github.com/mochi-mqtt/server/v2/packets"
 	"github.com/mochi-mqtt/server/v2/system"
-
-	"log/slog"
 )
 
 const (
@@ -954,6 +953,10 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 			atomic.AddInt64(&s.Info.Inflight, -1)
 		}
 		cl.State.Inflight.IncreaseReceiveQuota()
+		if len(ack.Payload) == 0 {
+			ack.Payload = pk.Payload
+			ack.TopicName = pk.TopicName
+		}
 		s.hooks.OnQosComplete(cl, ack)
 	}
 
