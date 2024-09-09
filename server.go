@@ -517,6 +517,7 @@ func (s *Server) readConnectionPacket(cl *Client) (pk packets.Packet, err error)
 // receivePacket processes an incoming packet for a client, and issues a disconnect to the client
 // if an error has occurred (if mqtt v5).
 func (s *Server) receivePacket(cl *Client, pk packets.Packet) error {
+	s.Log.Debug("receivePacket  processPacket")
 	err := s.processPacket(cl, pk)
 	if err != nil {
 		if code, ok := err.(packets.Code); ok &&
@@ -840,6 +841,7 @@ func (s *Server) Unsubscribe(filter string, subscriptionId int) error {
 func (s *Server) InjectPacket(cl *Client, pk packets.Packet) error {
 	pk.ProtocolVersion = cl.Properties.ProtocolVersion
 
+	s.Log.Debug("InjectPacket  processPacket")
 	err := s.processPacket(cl, pk)
 	if err != nil {
 		return err
