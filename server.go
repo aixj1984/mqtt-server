@@ -19,10 +19,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/aixj1984/mqtt-server/hooks/storage"
-	"github.com/aixj1984/mqtt-server/listeners"
-	"github.com/aixj1984/mqtt-server/packets"
-	"github.com/aixj1984/mqtt-server/system"
+	"github.com/mochi-mqtt/server/v2/hooks/storage"
+	"github.com/mochi-mqtt/server/v2/listeners"
+	"github.com/mochi-mqtt/server/v2/packets"
+	"github.com/mochi-mqtt/server/v2/system"
 )
 
 const (
@@ -517,7 +517,6 @@ func (s *Server) readConnectionPacket(cl *Client) (pk packets.Packet, err error)
 // receivePacket processes an incoming packet for a client, and issues a disconnect to the client
 // if an error has occurred (if mqtt v5).
 func (s *Server) receivePacket(cl *Client, pk packets.Packet) error {
-	s.Log.Debug("receivePacket  processPacket")
 	err := s.processPacket(cl, pk)
 	if err != nil {
 		if code, ok := err.(packets.Code); ok &&
@@ -841,7 +840,6 @@ func (s *Server) Unsubscribe(filter string, subscriptionId int) error {
 func (s *Server) InjectPacket(cl *Client, pk packets.Packet) error {
 	pk.ProtocolVersion = cl.Properties.ProtocolVersion
 
-	s.Log.Debug("InjectPacket  processPacket")
 	err := s.processPacket(cl, pk)
 	if err != nil {
 		return err
@@ -945,6 +943,11 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 		ack = s.buildAck(pk.PacketID, packets.Pubrec, 0, pk.Properties, packets.CodeSuccess) // [MQTT-3.3.4-1] [MQTT-4.3.3-8]
 	}
 
+	// 将原始消息的关键信息复制到确认包中
+	ack.Payload = pk.Payload     // 复制原始消息的 payload
+	ack.TopicName = pk.TopicName // 复制原始消息的 topic
+	ack.Origin = pk.Origin       // 复制原始消息的 origin
+
 	if ok := cl.State.Inflight.Set(ack); ok {
 		atomic.AddInt64(&s.Info.Inflight, 1)
 		s.hooks.OnQosPublish(cl, ack, ack.Created, 0)
@@ -964,7 +967,6 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 			ack.Payload = pk.Payload
 			ack.TopicName = pk.TopicName
 		}
-		s.Log.Debug("processPublish  OnQosComplete")
 		s.hooks.OnQosComplete(cl, ack)
 	}
 
@@ -1172,7 +1174,6 @@ func (s *Server) processPuback(cl *Client, pk packets.Packet) error {
 	if ok := cl.State.Inflight.Delete(pk.PacketID); ok { // [MQTT-4.3.2-5]
 		cl.State.Inflight.IncreaseSendQuota()
 		atomic.AddInt64(&s.Info.Inflight, -1)
-		s.Log.Debug("processPuback  OnQosComplete")
 		s.hooks.OnQosComplete(cl, pk)
 	}
 
@@ -1201,7 +1202,10 @@ func (s *Server) processPubrec(cl *Client, pk packets.Packet) error {
 
 // processPubrel processes a Pubrel packet, denoting completion of a QOS 2 packet sent from the client.
 func (s *Server) processPubrel(cl *Client, pk packets.Packet) error {
-	if _, ok := cl.State.Inflight.Get(pk.PacketID); !ok { // [MQTT-4.3.3-7] [MQTT-4.3.3-13]
+
+	// 获取原始消息
+	inflightPk, ok := cl.State.Inflight.Get(pk.PacketID)
+	if !ok { // [MQTT-4.3.3-7] [MQTT-4.3.3-13]
 		return cl.WritePacket(s.buildAck(pk.PacketID, packets.Pubcomp, 0, pk.Properties, packets.ErrPacketIdentifierNotFound))
 	}
 
@@ -1214,6 +1218,15 @@ func (s *Server) processPubrel(cl *Client, pk packets.Packet) error {
 	}
 
 	ack := s.buildAck(pk.PacketID, packets.Pubcomp, 0, pk.Properties, packets.CodeSuccess) // [MQTT-4.3.3-11]
+
+	// 将原始消息的关键信息复制到确认包中
+	ack.Payload = inflightPk.Payload     // 复制原始消息的 payload
+	ack.TopicName = inflightPk.TopicName // 复制原始消息的 topic
+	ack.Origin = inflightPk.Origin       // 复制原始消息的 origin
+	pk.Payload = inflightPk.Payload      // 复制原始消息的 payload
+	pk.TopicName = inflightPk.TopicName  // 复制原始消息的 topic
+	pk.Origin = inflightPk.Origin        // 复制原始消息的 origin
+
 	cl.State.Inflight.Set(ack)
 
 	err := cl.WritePacket(ack)
@@ -1225,7 +1238,6 @@ func (s *Server) processPubrel(cl *Client, pk packets.Packet) error {
 	cl.State.Inflight.IncreaseSendQuota()                // +1 SENT QUOTA
 	if ok := cl.State.Inflight.Delete(pk.PacketID); ok { // [MQTT-4.3.3-12]
 		atomic.AddInt64(&s.Info.Inflight, -1)
-		s.Log.Debug("processPubrel  OnQosComplete")
 		s.hooks.OnQosComplete(cl, pk)
 	}
 
@@ -1239,7 +1251,6 @@ func (s *Server) processPubcomp(cl *Client, pk packets.Packet) error {
 	cl.State.Inflight.IncreaseSendQuota()    // +1 SENT QUOTA
 	if ok := cl.State.Inflight.Delete(pk.PacketID); ok {
 		atomic.AddInt64(&s.Info.Inflight, -1)
-		s.Log.Debug("processPubcomp  OnQosComplete")
 		s.hooks.OnQosComplete(cl, pk)
 	}
 

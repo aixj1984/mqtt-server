@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	mqtt "github.com/aixj1984/mqtt-server"
-	"github.com/aixj1984/mqtt-server/hooks/storage"
-	"github.com/aixj1984/mqtt-server/packets"
-	"github.com/aixj1984/mqtt-server/system"
+	mqtt "github.com/mochi-mqtt/server/v2"
+	"github.com/mochi-mqtt/server/v2/hooks/storage"
+	"github.com/mochi-mqtt/server/v2/packets"
+	"github.com/mochi-mqtt/server/v2/system"
 	badgerdb "github.com/dgraph-io/badger/v4"
 )
 

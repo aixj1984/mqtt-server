@@ -8,8 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/aixj1984/mqtt-server/packets"
-	"github.com/aixj1984/mqtt-server/system"
+	"github.com/mochi-mqtt/server/v2/packets"
+	"github.com/mochi-mqtt/server/v2/system"
 )
 
 const (

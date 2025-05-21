@@ -9,9 +9,9 @@ import (
 	"log/slog"
 	"strings"
 
-	mqtt "github.com/aixj1984/mqtt-server"
-	"github.com/aixj1984/mqtt-server/hooks/storage"
-	"github.com/aixj1984/mqtt-server/packets"
+	mqtt "github.com/mochi-mqtt/server/v2"
+	"github.com/mochi-mqtt/server/v2/hooks/storage"
+	"github.com/mochi-mqtt/server/v2/packets"
 )
 
 // Options contains configuration settings for the debug output.
@@ -108,6 +108,7 @@ func (h *Hook) OnQosPublish(cl *mqtt.Client, pk packets.Packet, sent int64, rese
 // OnQosComplete is called when the Qos flow for a message has been completed.
 func (h *Hook) OnQosComplete(cl *mqtt.Client, pk packets.Packet) {
 	h.Log.Debug("inflight complete", "m", h.packetMeta(pk))
+	h.Log.Info("OnQosComplete", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID)
 }
 
 // OnQosDropped is called the Qos flow for a message expires.

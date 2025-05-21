@@ -11,9 +11,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/aixj1984/mqtt-server/hooks/storage"
-	"github.com/aixj1984/mqtt-server/packets"
-	"github.com/aixj1984/mqtt-server/system"
+	"github.com/mochi-mqtt/server/v2/hooks/storage"
+	"github.com/mochi-mqtt/server/v2/packets"
+	"github.com/mochi-mqtt/server/v2/system"
 )
 
 const (
@@ -482,6 +482,14 @@ func (h *Hooks) OnQosComplete(cl *Client, pk packets.Packet) {
 // an inflight message expires or is abandoned. It is typically used to delete an
 // inflight message from a store.
 func (h *Hooks) OnQosDropped(cl *Client, pk packets.Packet) {
+	// Try to get original message info if available
+	if inflightPk, ok := cl.State.Inflight.Get(pk.PacketID); ok {
+		// Copy original message info to the packet
+		pk.Payload = inflightPk.Payload
+		pk.TopicName = inflightPk.TopicName
+		pk.Origin = inflightPk.Origin
+	}
+
 	for _, hook := range h.GetAll() {
 		if hook.Provides(OnQosDropped) {
 			hook.OnQosDropped(cl, pk)

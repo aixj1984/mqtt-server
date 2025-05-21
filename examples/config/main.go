@@ -10,9 +10,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/aixj1984/mqtt-server/config"
+	"github.com/mochi-mqtt/server/v2/config"
 
-	mqtt "github.com/aixj1984/mqtt-server"
+	mqtt "github.com/mochi-mqtt/server/v2"
 )
 
 func main() {

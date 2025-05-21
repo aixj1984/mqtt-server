@@ -1,4 +1,4 @@
-module github.com/aixj1984/mqtt-server
+module github.com/mochi-mqtt/server/v2
 
 go 1.21
 
