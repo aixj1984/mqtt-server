@@ -10,10 +10,10 @@ import (
 	"errors"
 	"fmt"
 
-	mqtt "github.com/mochi-mqtt/server/v2"
-	"github.com/mochi-mqtt/server/v2/hooks/storage"
-	"github.com/mochi-mqtt/server/v2/packets"
-	"github.com/mochi-mqtt/server/v2/system"
+	mqtt "github.com/aixj1984/mqtt-server"
+	"github.com/aixj1984/mqtt-server/hooks/storage"
+	"github.com/aixj1984/mqtt-server/packets"
+	"github.com/aixj1984/mqtt-server/system"
 
 	"github.com/go-redis/redis/v8"
 )

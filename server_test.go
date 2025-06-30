@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mochi-mqtt/server/v2/hooks/storage"
-	"github.com/mochi-mqtt/server/v2/listeners"
-	"github.com/mochi-mqtt/server/v2/packets"
-	"github.com/mochi-mqtt/server/v2/system"
+	"github.com/aixj1984/mqtt-server/hooks/storage"
+	"github.com/aixj1984/mqtt-server/listeners"
+	"github.com/aixj1984/mqtt-server/packets"
+	"github.com/aixj1984/mqtt-server/system"
 
 	"github.com/stretchr/testify/require"
 )
@@ -860,7 +860,6 @@ func TestEstablishConnectionInheritExistingClean(t *testing.T) {
 	clw, ok := s.Clients.Get(packets.TPacketData[packets.Connect].Get(packets.TConnectMqtt311).Packet.Connect.ClientIdentifier)
 	require.True(t, ok)
 	require.Equal(t, 0, clw.State.Subscriptions.Len())
-
 }
 
 func TestEstablishConnectionBadAuthentication(t *testing.T) {
