@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/mochi-mqtt/server/v2/packets"
+	"github.com/aixj1984/mqtt-server/packets"
 	"github.com/stretchr/testify/require"
 )
 
