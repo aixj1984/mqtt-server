@@ -79,7 +79,7 @@ func GetMqttClient(ctx context.Context, serverURL *url.URL) (*autopaho.Connectio
 		ServerUrls:                    []*url.URL{serverURL},
 		KeepAlive:                     30,    // Keepalive message should be sent every 20 seconds
 		CleanStartOnInitialConnection: false, // Previous tests should not contaminate this one!
-		SessionExpiryInterval:         60,    // If connection drops we want session to remain live whilst we reconnect
+		SessionExpiryInterval:         60,    // If connection drops we want session to remain live whilst we reconnect   客户端连接的会话过期时间，单位秒
 		OnConnectionUp: func(cm *autopaho.ConnectionManager, connAck *paho.Connack) {
 			// zlog.Info("autopaho.ClientConfig", zlog.Fields{"msg": "mqtt connection up"})
 			fmt.Println("publish: mqtt connection up")
@@ -156,7 +156,7 @@ func (l *MqttClientSrv) SendMsg(ctx context.Context, topic string, payload *Mqtt
 		Retain:  retain,
 		Payload: data,
 		Properties: &paho.PublishProperties{
-			MessageExpiry: paho.Uint32(expire),
+			MessageExpiry: paho.Uint32(expire), // 消息不设置过期时间，发送后，如果session在，就会保留，如果设置过期了，session在，到期就会删除
 		},
 	})
 	if err != nil {
