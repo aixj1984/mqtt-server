@@ -79,6 +79,13 @@ func (h *MsgHook) OnACLCheck(cl *mqtt.Client, topic string, write bool) bool {
 func (h *MsgHook) OnConnect(cl *mqtt.Client, pk packets.Packet) error {
 	h.Log.Info("--->OnConnect", "client", cl.ID, "payload", string(pk.Payload), "Origin", pk.Origin, "remote ip", cl.Net.Remote)
 
+	tmpClient, exist := h.config.Server.Clients.Get(cl.ID)
+	if exist {
+		h.Log.Info(cl.ID + " already exists, disconnecting it")
+		_ = h.config.Server.DisconnectClient(tmpClient, packets.ErrAdministrativeAction)
+		h.config.Server.Clients.Delete(tmpClient.ID)
+	}
+
 	// // Example demonstrating how to subscribe to a topic within the hook.
 	// h.config.Server.Subscribe("hook/direct/publish", 1, h.subscribeCallback)
 

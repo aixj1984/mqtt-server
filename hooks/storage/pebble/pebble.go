@@ -332,7 +332,7 @@ func (h *Hook) OnQosDropped(cl *mqtt.Client, pk packets.Packet) {
 	if h.db == nil {
 		h.Log.Error("", "error", storage.ErrDBFileNotOpen)
 	}
-
+	fmt.Println("OnQosDropped", "OnQosComplete", cl.ID, pk.PacketID)
 	h.OnQosComplete(cl, pk)
 }
 

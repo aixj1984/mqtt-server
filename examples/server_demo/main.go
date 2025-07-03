@@ -15,6 +15,7 @@ import (
 	"github.com/aixj1984/mqtt-server/hooks/auth"
 	"github.com/aixj1984/mqtt-server/hooks/storage/pebble"
 	"github.com/aixj1984/mqtt-server/listeners"
+	"github.com/aixj1984/mqtt-server/packets"
 )
 
 func main() {
@@ -75,6 +76,13 @@ func main() {
 	err = server.AddListener(tcp)
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	tmpClient, exist := server.Clients.Get("test_client_id")
+	if exist {
+		log.Println("test_client_id already exists, disconnecting it")
+		_ = server.DisconnectClient(tmpClient, packets.ErrAdministrativeAction)
+		server.Clients.Delete(tmpClient.ID)
 	}
 
 	err = server.AddHook(new(pebble.Hook), &pebble.Options{
