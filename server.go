@@ -1261,6 +1261,17 @@ func (s *Server) processPubcomp(cl *Client, pk packets.Packet) error {
 	// regardless of whether the pubcomp is a success or failure, we end the qos flow, delete inflight, and restore the quotas.
 	cl.State.Inflight.IncreaseReceiveQuota() // +1 RECV QUOTA
 	cl.State.Inflight.IncreaseSendQuota()    // +1 SENT QUOTA
+
+	// 获取原始消息
+	inflightPk, ok := cl.State.Inflight.Get(pk.PacketID)
+	if !ok { // [MQTT-4.3.3-7] [MQTT-4.3.3-13]
+		return nil
+	}
+	// 将原始消息的关键信息复制到确认包中
+	pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
+	pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
+	pk.Origin = inflightPk.Origin       // 复制原始消息的 origin
+
 	if ok := cl.State.Inflight.Delete(pk.PacketID); ok {
 		atomic.AddInt64(&s.Info.Inflight, -1)
 		fmt.Println("processPubcomp", "OnQosComplete", cl.ID, pk.PacketID)

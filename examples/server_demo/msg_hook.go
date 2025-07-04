@@ -164,6 +164,11 @@ func (h *MsgHook) OnSubscribe(cl *mqtt.Client, pk packets.Packet) packets.Packet
 
 // OnPacketRead is called when a packet is received from a client.
 func (h *MsgHook) OnPacketRead(cl *mqtt.Client, pk packets.Packet) (packets.Packet, error) {
+	if pk.FixedHeader.Type == packets.Pingreq {
+		// 处理心跳接收逻辑
+		h.Log.Info("收到客户端的心跳", "client", cl.ID)
+	}
+
 	if len(pk.TopicName) > 0 {
 		h.Log.Info("OnPacketRead", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID)
 	}
@@ -174,6 +179,11 @@ func (h *MsgHook) OnPacketRead(cl *mqtt.Client, pk packets.Packet) (packets.Pack
 // OnPacketSent is called when a packet has been sent to a client. It takes a bytes parameter
 // containing the bytes sent.
 func (h *MsgHook) OnPacketSent(cl *mqtt.Client, pk packets.Packet, b []byte) {
+	if pk.FixedHeader.Type == packets.Pingresp {
+		// 处理心跳响应逻辑
+		h.Log.Info("向客户端发送心跳响应", "client", cl.ID)
+	}
+
 	if len(pk.TopicName) == 0 {
 		return
 	}
