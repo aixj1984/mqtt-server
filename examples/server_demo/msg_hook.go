@@ -42,6 +42,7 @@ func (h *MsgHook) Provides(b byte) bool {
 		mqtt.OnQosDropped,
 		mqtt.OnPublishDropped,
 		mqtt.OnQosComplete,
+		mqtt.OnPacketIDExhausted,
 	}, []byte{b})
 }
 
@@ -233,4 +234,8 @@ func (h *MsgHook) OnPublishDropped(cl *mqtt.Client, pk packets.Packet) {
 // It is typically used to delete an inflight message from a store.
 func (h *MsgHook) OnQosComplete(cl *mqtt.Client, pk packets.Packet) {
 	h.Log.Info("OnQosComplete", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID)
+}
+
+func (h *MsgHook) OnPacketIDExhausted(cl *mqtt.Client, pk packets.Packet) {
+	h.Log.Info("OnPacketIDExhausted", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID)
 }
