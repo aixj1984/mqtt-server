@@ -1185,7 +1185,6 @@ func (s *Server) processPuback(cl *Client, pk packets.Packet) error {
 	if ok := cl.State.Inflight.Delete(pk.PacketID); ok { // [MQTT-4.3.2-5]
 		cl.State.Inflight.IncreaseSendQuota()
 		atomic.AddInt64(&s.Info.Inflight, -1)
-		fmt.Println("processPuback", "OnQosComplete", cl.ID, pk.PacketID)
 		s.hooks.OnQosComplete(cl, pk)
 	}
 
@@ -1249,7 +1248,6 @@ func (s *Server) processPubrel(cl *Client, pk packets.Packet) error {
 	cl.State.Inflight.IncreaseSendQuota()                // +1 SENT QUOTA
 	if ok := cl.State.Inflight.Delete(pk.PacketID); ok { // [MQTT-4.3.3-12]
 		atomic.AddInt64(&s.Info.Inflight, -1)
-		fmt.Println("processPubrel", "OnQosComplete", cl.ID, pk.PacketID)
 		s.hooks.OnQosComplete(cl, pk)
 	}
 
@@ -1274,7 +1272,6 @@ func (s *Server) processPubcomp(cl *Client, pk packets.Packet) error {
 
 	if ok := cl.State.Inflight.Delete(pk.PacketID); ok {
 		atomic.AddInt64(&s.Info.Inflight, -1)
-		fmt.Println("processPubcomp", "OnQosComplete", cl.ID, pk.PacketID)
 		s.hooks.OnQosComplete(cl, pk)
 	}
 
