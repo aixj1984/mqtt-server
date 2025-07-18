@@ -479,7 +479,7 @@ func (s *Server) attachClient(cl *Client, listener string) error {
 	} else {
 		cl.Properties.Will = Will{} // [MQTT-3.14.4-3] [MQTT-3.1.2-10]
 	}
-	s.Log.Debug("client disconnected", "error", err, "client", cl.ID, "remote", cl.Net.Remote, "listener", listener)
+	s.Log.Debug("client disconnected", "error", err, "client", cl.ID, "remote", cl.Net.Remote, "listener", listener, "keepalive", cl.State.Keepalive)
 
 	expire := (cl.Properties.ProtocolVersion == 5 && cl.Properties.Props.SessionExpiryInterval == 0) || (cl.Properties.ProtocolVersion < 5 && cl.Properties.Clean)
 	s.hooks.OnDisconnect(cl, err, expire)
@@ -947,6 +947,7 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 	ack.Payload = pk.Payload     // 复制原始消息的 payload
 	ack.TopicName = pk.TopicName // 复制原始消息的 topic
 	ack.Origin = pk.Origin       // 复制原始消息的 origin
+	ack.FixedHeader = pk.FixedHeader
 
 	if ok := cl.State.Inflight.Set(ack); ok {
 		atomic.AddInt64(&s.Info.Inflight, 1)
@@ -1181,6 +1182,7 @@ func (s *Server) processPuback(cl *Client, pk packets.Packet) error {
 	pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
 	pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
 	pk.Origin = inflightPk.Origin       // 复制原始消息的 origin
+	pk.FixedHeader = inflightPk.FixedHeader
 
 	if ok := cl.State.Inflight.Delete(pk.PacketID); ok { // [MQTT-4.3.2-5]
 		cl.State.Inflight.IncreaseSendQuota()
@@ -1233,9 +1235,11 @@ func (s *Server) processPubrel(cl *Client, pk packets.Packet) error {
 	ack.Payload = inflightPk.Payload     // 复制原始消息的 payload
 	ack.TopicName = inflightPk.TopicName // 复制原始消息的 topic
 	ack.Origin = inflightPk.Origin       // 复制原始消息的 origin
-	pk.Payload = inflightPk.Payload      // 复制原始消息的 payload
-	pk.TopicName = inflightPk.TopicName  // 复制原始消息的 topic
-	pk.Origin = inflightPk.Origin        // 复制原始消息的 origin
+	ack.FixedHeader = inflightPk.FixedHeader
+	pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
+	pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
+	pk.Origin = inflightPk.Origin       // 复制原始消息的 origin
+	pk.FixedHeader = inflightPk.FixedHeader
 
 	cl.State.Inflight.Set(ack)
 
@@ -1269,6 +1273,7 @@ func (s *Server) processPubcomp(cl *Client, pk packets.Packet) error {
 	pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
 	pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
 	pk.Origin = inflightPk.Origin       // 复制原始消息的 origin
+	pk.FixedHeader = inflightPk.FixedHeader
 
 	if ok := cl.State.Inflight.Delete(pk.PacketID); ok {
 		atomic.AddInt64(&s.Info.Inflight, -1)
