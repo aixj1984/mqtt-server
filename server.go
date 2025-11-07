@@ -944,10 +944,10 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 	}
 
 	// 将原始消息的关键信息复制到确认包中
-	ack.Payload = pk.Payload     // 复制原始消息的 payload
-	ack.TopicName = pk.TopicName // 复制原始消息的 topic
-	ack.Origin = pk.Origin       // 复制原始消息的 origin
-	ack.FixedHeader = pk.FixedHeader
+	// ack.Payload = pk.Payload         // 复制原始消息的 payload
+	// ack.TopicName = pk.TopicName     // 复制原始消息的 topic
+	// ack.Origin = pk.Origin           // 复制原始消息的 origin
+	// ack.FixedHeader = pk.FixedHeader // 复制原始消息的 fixedheader
 
 	if ok := cl.State.Inflight.Set(ack); ok {
 		atomic.AddInt64(&s.Info.Inflight, 1)
@@ -965,8 +965,9 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 		}
 		cl.State.Inflight.IncreaseReceiveQuota()
 		if len(ack.Payload) == 0 {
-			ack.Payload = pk.Payload
-			ack.TopicName = pk.TopicName
+			ack.Payload = pk.Payload     // 复制原始消息的 payload
+			ack.TopicName = pk.TopicName // 复制原始消息的 topic
+			ack.Origin = pk.Origin       // 复制原始消息的 origin
 		}
 		s.hooks.OnQosComplete(cl, ack)
 	}
@@ -1232,10 +1233,10 @@ func (s *Server) processPubrel(cl *Client, pk packets.Packet) error {
 	ack := s.buildAck(pk.PacketID, packets.Pubcomp, 0, pk.Properties, packets.CodeSuccess) // [MQTT-4.3.3-11]
 
 	// 将原始消息的关键信息复制到确认包中
-	ack.Payload = inflightPk.Payload     // 复制原始消息的 payload
-	ack.TopicName = inflightPk.TopicName // 复制原始消息的 topic
-	ack.Origin = inflightPk.Origin       // 复制原始消息的 origin
-	ack.FixedHeader = inflightPk.FixedHeader
+	// ack.Payload = inflightPk.Payload     // 复制原始消息的 payload
+	// ack.TopicName = inflightPk.TopicName // 复制原始消息的 topic
+	// ack.Origin = inflightPk.Origin       // 复制原始消息的 origin
+	// ack.FixedHeader = inflightPk.FixedHeader
 	pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
 	pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
 	pk.Origin = inflightPk.Origin       // 复制原始消息的 origin
