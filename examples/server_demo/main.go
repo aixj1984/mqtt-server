@@ -77,7 +77,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-
 	err = server.AddHook(new(pebble.Hook), &pebble.Options{
 		Path: "./data",
 		Mode: pebble.Sync,

@@ -30,6 +30,7 @@ const (
 	defaultSysTopicInterval int64 = 1       // the interval between $SYS topic publishes
 	LocalListener                 = "local"
 	InlineClientId                = "inline"
+	IsFixedPacketInfo             = true // 是否补全包信息
 )
 
 var (
@@ -943,11 +944,13 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 		ack = s.buildAck(pk.PacketID, packets.Pubrec, 0, pk.Properties, packets.CodeSuccess) // [MQTT-3.3.4-1] [MQTT-4.3.3-8]
 	}
 
-	// 将原始消息的关键信息复制到确认包中
-	// ack.Payload = pk.Payload         // 复制原始消息的 payload
-	// ack.TopicName = pk.TopicName     // 复制原始消息的 topic
-	// ack.Origin = pk.Origin           // 复制原始消息的 origin
-	// ack.FixedHeader = pk.FixedHeader // 复制原始消息的 fixedheader
+	if len(ack.TopicName) == 0 && IsFixedPacketInfo {
+		// 将原始消息的关键信息复制到确认包中
+		ack.Payload = pk.Payload     // 复制原始消息的 payload
+		ack.TopicName = pk.TopicName // 复制原始消息的 topic
+		ack.Origin = pk.Origin       // 复制原始消息的 origin
+		// ack.FixedHeader = pk.FixedHeader // 复制原始消息的 fixedheader
+	}
 
 	if ok := cl.State.Inflight.Set(ack); ok {
 		atomic.AddInt64(&s.Info.Inflight, 1)
@@ -968,6 +971,7 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 			ack.Payload = pk.Payload     // 复制原始消息的 payload
 			ack.TopicName = pk.TopicName // 复制原始消息的 topic
 			ack.Origin = pk.Origin       // 复制原始消息的 origin
+			// ack.FixedHeader = pk.FixedHeader // 复制原始消息的 fixedheader
 		}
 		s.hooks.OnQosComplete(cl, ack)
 	}
@@ -1090,6 +1094,14 @@ func (s *Server) publishToClient(cl *Client, sub packets.Subscription, pk packet
 		out.PacketID = uint16(i) // [MQTT-2.2.1-4]
 		sentQuota := atomic.LoadInt32(&cl.State.Inflight.sendQuota)
 
+		if len(out.TopicName) == 0 && IsFixedPacketInfo {
+			// 将原始消息的关键信息复制到确认包中
+			out.Payload = pk.Payload     // 复制原始消息的 payload
+			out.TopicName = pk.TopicName // 复制原始消息的 topic
+			out.Origin = pk.Origin       // 复制原始消息的 origin
+			// out.FixedHeader = pk.FixedHeader
+		}
+
 		if ok := cl.State.Inflight.Set(out); ok { // [MQTT-4.3.2-3] [MQTT-4.3.3-3]
 			atomic.AddInt64(&s.Info.Inflight, 1)
 			s.hooks.OnQosPublish(cl, out, out.Created, 0)
@@ -1179,15 +1191,18 @@ func (s *Server) processPuback(cl *Client, pk packets.Packet) error {
 		return nil // omit, but would be packets.ErrPacketIdentifierNotFound
 	}
 
-	// 将原始消息的关键信息复制到确认包中
-	pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
-	pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
-	pk.Origin = inflightPk.Origin       // 复制原始消息的 origin
-	pk.FixedHeader = inflightPk.FixedHeader
-
 	if ok := cl.State.Inflight.Delete(pk.PacketID); ok { // [MQTT-4.3.2-5]
 		cl.State.Inflight.IncreaseSendQuota()
 		atomic.AddInt64(&s.Info.Inflight, -1)
+
+		if len(pk.TopicName) == 0 && IsFixedPacketInfo {
+			// 将原始消息的关键信息复制到确认包中
+			pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
+			pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
+			pk.Origin = inflightPk.Origin       // 复制原始消息的 origin
+			// pk.FixedHeader = inflightPk.FixedHeader
+		}
+
 		s.hooks.OnQosComplete(cl, pk)
 	}
 
@@ -1196,7 +1211,12 @@ func (s *Server) processPuback(cl *Client, pk packets.Packet) error {
 
 // processPubrec processes a Pubrec packet, denoting receipt of a QOS 2 packet sent from the server.
 func (s *Server) processPubrec(cl *Client, pk packets.Packet) error {
-	if _, ok := cl.State.Inflight.Get(pk.PacketID); !ok { // [MQTT-4.3.3-7] [MQTT-4.3.3-13]
+	// if _, ok := cl.State.Inflight.Get(pk.PacketID); !ok { // [MQTT-4.3.3-7] [MQTT-4.3.3-13]
+	// 	return cl.WritePacket(s.buildAck(pk.PacketID, packets.Pubrel, 1, pk.Properties, packets.ErrPacketIdentifierNotFound))
+	// }
+
+	inflightPk, ok := cl.State.Inflight.Get(pk.PacketID)
+	if !ok { // [MQTT-4.3.3-7] [MQTT-4.3.3-13]
 		return cl.WritePacket(s.buildAck(pk.PacketID, packets.Pubrel, 1, pk.Properties, packets.ErrPacketIdentifierNotFound))
 	}
 
@@ -1204,13 +1224,29 @@ func (s *Server) processPubrec(cl *Client, pk packets.Packet) error {
 		if ok := cl.State.Inflight.Delete(pk.PacketID); ok {
 			atomic.AddInt64(&s.Info.Inflight, -1)
 		}
+
+		if len(pk.TopicName) == 0 && IsFixedPacketInfo {
+			// 将原始消息的关键信息复制到确认包中
+			pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
+			pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
+			pk.Origin = inflightPk.Origin       // 复制原始消息的 origin
+			// ack.FixedHeader = inflightPk.FixedHeader // 复制原始消息的 fixedheader
+		}
 		cl.ops.hooks.OnQosDropped(cl, pk)
 		return nil // as per MQTT5 Section 4.13.2 paragraph 2
 	}
 
 	ack := s.buildAck(pk.PacketID, packets.Pubrel, 1, pk.Properties, packets.CodeSuccess) // [MQTT-4.3.3-4] ![MQTT-4.3.3-6]
 	cl.State.Inflight.DecreaseReceiveQuota()                                              // -1 RECV QUOTA
-	cl.State.Inflight.Set(ack)                                                            // [MQTT-4.3.3-5]
+
+	if len(ack.Payload) == 0 && IsFixedPacketInfo {
+		// 将原始消息的关键信息复制到确认包中
+		ack.Payload = inflightPk.Payload     // 复制原始消息的 payload
+		ack.TopicName = inflightPk.TopicName // 复制原始消息的 topic
+		ack.Origin = inflightPk.Origin       // 复制原始消息的 origin
+		// ack.FixedHeader = inflightPk.FixedHeader // 复制原始消息的 fixedheader
+	}
+	cl.State.Inflight.Set(ack) // [MQTT-4.3.3-5]
 	return cl.WritePacket(ack)
 }
 
@@ -1226,21 +1262,27 @@ func (s *Server) processPubrel(cl *Client, pk packets.Packet) error {
 		if ok := cl.State.Inflight.Delete(pk.PacketID); ok {
 			atomic.AddInt64(&s.Info.Inflight, -1)
 		}
+
+		if len(pk.TopicName) == 0 && IsFixedPacketInfo {
+			// 将原始消息的关键信息复制到确认包中
+			pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
+			pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
+			pk.Origin = inflightPk.Origin       // 复制原始消息的 origin
+			// ack.FixedHeader = inflightPk.FixedHeader // 复制原始消息的 fixedheader
+		}
 		cl.ops.hooks.OnQosDropped(cl, pk)
 		return nil
 	}
 
 	ack := s.buildAck(pk.PacketID, packets.Pubcomp, 0, pk.Properties, packets.CodeSuccess) // [MQTT-4.3.3-11]
 
-	// 将原始消息的关键信息复制到确认包中
-	// ack.Payload = inflightPk.Payload     // 复制原始消息的 payload
-	// ack.TopicName = inflightPk.TopicName // 复制原始消息的 topic
-	// ack.Origin = inflightPk.Origin       // 复制原始消息的 origin
-	// ack.FixedHeader = inflightPk.FixedHeader
-	pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
-	pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
-	pk.Origin = inflightPk.Origin       // 复制原始消息的 origin
-	pk.FixedHeader = inflightPk.FixedHeader
+	if len(ack.TopicName) == 0 && IsFixedPacketInfo {
+		// 将原始消息的关键信息复制到确认包中
+		ack.Payload = inflightPk.Payload     // 复制原始消息的 payload
+		ack.TopicName = inflightPk.TopicName // 复制原始消息的 topic
+		ack.Origin = inflightPk.Origin       // 复制原始消息的 origin
+		// ack.FixedHeader = inflightPk.FixedHeader // 复制原始消息的 fixedheader
+	}
 
 	cl.State.Inflight.Set(ack)
 
@@ -1253,6 +1295,13 @@ func (s *Server) processPubrel(cl *Client, pk packets.Packet) error {
 	cl.State.Inflight.IncreaseSendQuota()                // +1 SENT QUOTA
 	if ok := cl.State.Inflight.Delete(pk.PacketID); ok { // [MQTT-4.3.3-12]
 		atomic.AddInt64(&s.Info.Inflight, -1)
+		if len(pk.TopicName) == 0 && IsFixedPacketInfo {
+			// 将原始消息的关键信息复制到确认包中
+			pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
+			pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
+			pk.Origin = inflightPk.Origin       // 复制原始消息的 origin
+			// pk.FixedHeader = inflightPk.FixedHeader
+		}
 		s.hooks.OnQosComplete(cl, pk)
 	}
 
@@ -1270,14 +1319,16 @@ func (s *Server) processPubcomp(cl *Client, pk packets.Packet) error {
 	if !ok { // [MQTT-4.3.3-7] [MQTT-4.3.3-13]
 		return nil
 	}
-	// 将原始消息的关键信息复制到确认包中
-	pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
-	pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
-	pk.Origin = inflightPk.Origin       // 复制原始消息的 origin
-	pk.FixedHeader = inflightPk.FixedHeader
 
 	if ok := cl.State.Inflight.Delete(pk.PacketID); ok {
 		atomic.AddInt64(&s.Info.Inflight, -1)
+		if len(pk.TopicName) == 0 && IsFixedPacketInfo {
+			// 将原始消息的关键信息复制到确认包中
+			pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
+			pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
+			pk.Origin = inflightPk.Origin       // 复制原始消息的 origin
+			// pk.FixedHeader = inflightPk.FixedHeader
+		}
 		s.hooks.OnQosComplete(cl, pk)
 	}
 

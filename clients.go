@@ -317,7 +317,6 @@ func (cl *Client) ResendInflightMessages(force bool) error {
 
 		if tk.FixedHeader.Type == packets.Puback || tk.FixedHeader.Type == packets.Pubcomp {
 			if ok := cl.State.Inflight.Delete(tk.PacketID); ok {
-				fmt.Println("ResendInflightMessages", "OnQosComplete", cl.ID, tk.PacketID)
 				cl.ops.hooks.OnQosComplete(cl, tk)
 				atomic.AddInt64(&cl.ops.info.Inflight, -1)
 			}

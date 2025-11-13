@@ -41,7 +41,9 @@ func (h *MsgHook) Provides(b byte) bool {
 		mqtt.OnPublish,
 		mqtt.OnQosDropped,
 		mqtt.OnPublishDropped,
-		mqtt.OnQosComplete,
+		mqtt.OnQosPublish,  // 当发出QoS >= 1 的消息给订阅者后调用。
+		mqtt.OnQosComplete, // 在消息的QoS流程走完之后调用。
+		mqtt.OnQosDropped,  // 在消息的QoS流程未完成，同时消息到期时调用。
 		mqtt.OnPacketIDExhausted,
 	}, []byte{b})
 }
@@ -171,7 +173,7 @@ func (h *MsgHook) OnPacketRead(cl *mqtt.Client, pk packets.Packet) (packets.Pack
 	}
 
 	if len(pk.TopicName) > 0 {
-		h.Log.Info("OnPacketRead", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID)
+		h.Log.Info("OnPacketRead", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID, "Expiry", pk.Expiry, "Qos", pk.FixedHeader.Qos)
 	}
 
 	return pk, nil
@@ -189,7 +191,7 @@ func (h *MsgHook) OnPacketSent(cl *mqtt.Client, pk packets.Packet, b []byte) {
 		return
 	}
 
-	h.Log.Info("OnPacketSent", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID)
+	h.Log.Info("OnPacketSent", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID, "Expiry", pk.Expiry, "Qos", pk.FixedHeader.Qos)
 }
 
 // OnSubscribed is called when a client subscribes to one or more filters.
@@ -206,36 +208,43 @@ func (h *MsgHook) OnUnsubscribed(cl *mqtt.Client, pk packets.Packet) {
 // in that it allows you to modify you to modify the incoming packet before it is processed.
 // The return values of the hook methods are passed-through in the order the hooks were attached.
 func (h *MsgHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packets.Packet, error) {
-	h.Log.Info("OnPublish", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID)
+	h.Log.Info("OnPublish", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID, "Expiry", pk.Expiry, "Qos", pk.FixedHeader.Qos)
 
 	return pk, nil
 }
 
 // OnPublished is called when a client has published a message to subscribers.
 func (h *MsgHook) OnPublished(cl *mqtt.Client, pk packets.Packet) {
-	h.Log.Info("OnPublished", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID)
-}
-
-// OnQosDropped is called the Qos flow for a message expires. In other words, when
-// an inflight message expires or is abandoned. It is typically used to delete an
-// inflight message from a store.
-func (h *MsgHook) OnQosDropped(cl *mqtt.Client, pk packets.Packet) {
-	h.Log.Info("OnQosDropped", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID, "Expiry", pk.Expiry)
+	h.Log.Info("OnPublished", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID, "Expiry", pk.Expiry, "Qos", pk.FixedHeader.Qos)
 }
 
 // OnPublishDropped is called when a message to a client was dropped instead of delivered
 // such as when a client is too slow to respond.
 func (h *MsgHook) OnPublishDropped(cl *mqtt.Client, pk packets.Packet) {
-	h.Log.Info("OnPublishDropped", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID, "Expiry", pk.Expiry)
+	h.Log.Info("OnPublishDropped", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID, "Expiry", pk.Expiry, "Qos", pk.FixedHeader.Qos)
+}
+
+// OnQosPublish is called when a publish packet with Qos >= 1 is issued to a subscriber.
+// In other words, this method is called when a new inflight message is created or resent.
+// It is typically used to store a new inflight message.
+func (h *MsgHook) OnQosPublish(cl *mqtt.Client, pk packets.Packet, sent int64, resends int) {
+	h.Log.Info("OnQosPublish", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID, "Expiry", pk.Expiry, "Qos", pk.FixedHeader.Qos)
 }
 
 // OnQosComplete is called when the Qos flow for a message has been completed.
 // In other words, when an inflight message is resolved.
 // It is typically used to delete an inflight message from a store.
 func (h *MsgHook) OnQosComplete(cl *mqtt.Client, pk packets.Packet) {
-	h.Log.Info("OnQosComplete", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID)
+	h.Log.Info("OnQosComplete", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID, "Expiry", pk.Expiry, "Qos", pk.FixedHeader.Qos)
+}
+
+// OnQosDropped is called the Qos flow for a message expires. In other words, when
+// an inflight message expires or is abandoned. It is typically used to delete an
+// inflight message from a store.
+func (h *MsgHook) OnQosDropped(cl *mqtt.Client, pk packets.Packet) {
+	h.Log.Info("OnQosDropped", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID, "Expiry", pk.Expiry, "Qos", pk.FixedHeader.Qos)
 }
 
 func (h *MsgHook) OnPacketIDExhausted(cl *mqtt.Client, pk packets.Packet) {
-	h.Log.Info("OnPacketIDExhausted", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID)
+	h.Log.Info("OnPacketIDExhausted", "client", cl.ID, "payload", string(pk.Payload), "topic", pk.TopicName, "Origin", pk.Origin, "PacketID", pk.PacketID, "Expiry", pk.Expiry, "Qos", pk.FixedHeader.Qos)
 }
