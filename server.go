@@ -30,7 +30,7 @@ const (
 	defaultSysTopicInterval int64 = 1       // the interval between $SYS topic publishes
 	LocalListener                 = "local"
 	InlineClientId                = "inline"
-	IsFixedPacketInfo             = true // 是否补全包信息
+	IsFixedPacketInfo             = false // 是否补全包信息
 )
 
 var (
