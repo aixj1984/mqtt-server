@@ -944,7 +944,7 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 		ack = s.buildAck(pk.PacketID, packets.Pubrec, 0, pk.Properties, packets.CodeSuccess) // [MQTT-3.3.4-1] [MQTT-4.3.3-8]
 	}
 
-	if len(ack.TopicName) == 0 && IsFixedPacketInfo {
+	if len(ack.TopicName) == 0 && len(pk.TopicName) > 0 && IsFixedPacketInfo {
 		// 将原始消息的关键信息复制到确认包中
 		ack.Payload = pk.Payload     // 复制原始消息的 payload
 		ack.TopicName = pk.TopicName // 复制原始消息的 topic
@@ -1094,7 +1094,7 @@ func (s *Server) publishToClient(cl *Client, sub packets.Subscription, pk packet
 		out.PacketID = uint16(i) // [MQTT-2.2.1-4]
 		sentQuota := atomic.LoadInt32(&cl.State.Inflight.sendQuota)
 
-		if len(out.TopicName) == 0 && IsFixedPacketInfo {
+		if len(out.TopicName) == 0 && len(pk.TopicName) > 0 && IsFixedPacketInfo {
 			// 将原始消息的关键信息复制到确认包中
 			out.Payload = pk.Payload     // 复制原始消息的 payload
 			out.TopicName = pk.TopicName // 复制原始消息的 topic
@@ -1195,7 +1195,7 @@ func (s *Server) processPuback(cl *Client, pk packets.Packet) error {
 		cl.State.Inflight.IncreaseSendQuota()
 		atomic.AddInt64(&s.Info.Inflight, -1)
 
-		if len(pk.TopicName) == 0 && IsFixedPacketInfo {
+		if len(pk.TopicName) == 0 && len(inflightPk.TopicName) > 0 && IsFixedPacketInfo {
 			// 将原始消息的关键信息复制到确认包中
 			pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
 			pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
@@ -1225,7 +1225,7 @@ func (s *Server) processPubrec(cl *Client, pk packets.Packet) error {
 			atomic.AddInt64(&s.Info.Inflight, -1)
 		}
 
-		if len(pk.TopicName) == 0 && IsFixedPacketInfo {
+		if len(pk.TopicName) == 0 && len(inflightPk.TopicName) > 0 && IsFixedPacketInfo {
 			// 将原始消息的关键信息复制到确认包中
 			pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
 			pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
@@ -1239,7 +1239,7 @@ func (s *Server) processPubrec(cl *Client, pk packets.Packet) error {
 	ack := s.buildAck(pk.PacketID, packets.Pubrel, 1, pk.Properties, packets.CodeSuccess) // [MQTT-4.3.3-4] ![MQTT-4.3.3-6]
 	cl.State.Inflight.DecreaseReceiveQuota()                                              // -1 RECV QUOTA
 
-	if len(ack.Payload) == 0 && IsFixedPacketInfo {
+	if len(ack.TopicName) == 0 && len(inflightPk.TopicName) > 0 && IsFixedPacketInfo {
 		// 将原始消息的关键信息复制到确认包中
 		ack.Payload = inflightPk.Payload     // 复制原始消息的 payload
 		ack.TopicName = inflightPk.TopicName // 复制原始消息的 topic
@@ -1263,7 +1263,7 @@ func (s *Server) processPubrel(cl *Client, pk packets.Packet) error {
 			atomic.AddInt64(&s.Info.Inflight, -1)
 		}
 
-		if len(pk.TopicName) == 0 && IsFixedPacketInfo {
+		if len(pk.TopicName) == 0 && len(inflightPk.TopicName) > 0 && IsFixedPacketInfo {
 			// 将原始消息的关键信息复制到确认包中
 			pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
 			pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
@@ -1276,7 +1276,7 @@ func (s *Server) processPubrel(cl *Client, pk packets.Packet) error {
 
 	ack := s.buildAck(pk.PacketID, packets.Pubcomp, 0, pk.Properties, packets.CodeSuccess) // [MQTT-4.3.3-11]
 
-	if len(ack.TopicName) == 0 && IsFixedPacketInfo {
+	if len(ack.TopicName) == 0 && len(inflightPk.TopicName) > 0 && IsFixedPacketInfo {
 		// 将原始消息的关键信息复制到确认包中
 		ack.Payload = inflightPk.Payload     // 复制原始消息的 payload
 		ack.TopicName = inflightPk.TopicName // 复制原始消息的 topic
@@ -1295,7 +1295,7 @@ func (s *Server) processPubrel(cl *Client, pk packets.Packet) error {
 	cl.State.Inflight.IncreaseSendQuota()                // +1 SENT QUOTA
 	if ok := cl.State.Inflight.Delete(pk.PacketID); ok { // [MQTT-4.3.3-12]
 		atomic.AddInt64(&s.Info.Inflight, -1)
-		if len(pk.TopicName) == 0 && IsFixedPacketInfo {
+		if len(pk.TopicName) == 0 && len(inflightPk.TopicName) > 0 && IsFixedPacketInfo {
 			// 将原始消息的关键信息复制到确认包中
 			pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
 			pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
@@ -1322,7 +1322,7 @@ func (s *Server) processPubcomp(cl *Client, pk packets.Packet) error {
 
 	if ok := cl.State.Inflight.Delete(pk.PacketID); ok {
 		atomic.AddInt64(&s.Info.Inflight, -1)
-		if len(pk.TopicName) == 0 && IsFixedPacketInfo {
+		if len(pk.TopicName) == 0 && len(inflightPk.TopicName) > 0 && IsFixedPacketInfo {
 			// 将原始消息的关键信息复制到确认包中
 			pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
 			pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
