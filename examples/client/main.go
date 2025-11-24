@@ -6,9 +6,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -27,7 +29,7 @@ func main() {
 		QoS:      1,
 	}
 
-	client, err := NewMqttClient(&config)
+	client, err := NewMqttClient(&config, GetSetupFunc())
 	if err != nil {
 		log.Fatal("NewMqttClient error:", err)
 	}
@@ -37,6 +39,13 @@ func main() {
 	err = client.Subscribe(context.Background(), "testtopic/test")
 	if err != nil {
 		log.Fatal("Subscribe error:", err)
+	}
+
+	for i := 0; i < 10; i++ {
+		fmt.Println("SendObject......", i)
+		client.SendObject(context.Background(), "testtopic/test", &MqttPayload{
+			Data: "test:" + strconv.Itoa(i),
+		}, false, 0)
 	}
 
 	<-done

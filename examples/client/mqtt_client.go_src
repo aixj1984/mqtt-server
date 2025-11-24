@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"time"
 
 	"github.com/eclipse/paho.golang/autopaho"
 	"github.com/eclipse/paho.golang/paho"
@@ -41,7 +40,7 @@ type MqttClientSrv struct {
 }
 
 // NewMqttClient 是新构造一个服务对象
-func NewMqttClient(c *MqttConfig, onConnUp func(cm *autopaho.ConnectionManager, connAck *paho.Connack)) (*MqttClientSrv, error) {
+func NewMqttClient(c *MqttConfig) (*MqttClientSrv, error) {
 	u, err := url.Parse(c.Endpoint)
 	if err != nil {
 		fmt.Println("NewMqttClient error:", err.Error(), "endpoint:", c.Endpoint)
@@ -49,7 +48,7 @@ func NewMqttClient(c *MqttConfig, onConnUp func(cm *autopaho.ConnectionManager, 
 		return nil, err
 	}
 
-	client, err := GetMqttClient(context.Background(), u, onConnUp)
+	client, err := GetMqttClient(context.Background(), u)
 	if err != nil {
 		fmt.Println("GetMqttClient error:", err.Error(), "endpoint:", c.Endpoint)
 		// zlog.Error("GetMqttClient", zlog.Fields{"error": err.Error(), "endpoint": c.Endpoint})
@@ -64,7 +63,7 @@ func NewMqttClient(c *MqttConfig, onConnUp func(cm *autopaho.ConnectionManager, 
 }
 
 // GetMqttClient if gen a client to connect broker
-func GetMqttClient(ctx context.Context, serverURL *url.URL, onConnUp func(cm *autopaho.ConnectionManager, connAck *paho.Connack)) (*autopaho.ConnectionManager, error) {
+func GetMqttClient(ctx context.Context, serverURL *url.URL) (*autopaho.ConnectionManager, error) {
 	router := paho.NewStandardRouter()
 	router.DefaultHandler(func(p *paho.Publish) { fmt.Printf("defaulthandler received message with topic: %s\n", p.Topic) })
 
@@ -78,29 +77,12 @@ func GetMqttClient(ctx context.Context, serverURL *url.URL, onConnUp func(cm *au
 
 	cliCfg := autopaho.ClientConfig{
 		ServerUrls:                    []*url.URL{serverURL},
-		KeepAlive:                     30,                                   // Keepalive message should be sent every 20 seconds
-		CleanStartOnInitialConnection: false,                                // Previous tests should not contaminate this one!
-		ReconnectBackoff:              autopaho.DefaultExponentialBackoff(), // 添加指数退避策略
-		SessionExpiryInterval:         60,                                   // If connection drops we want session to remain live whilst we reconnect   客户端连接的会话过期时间，单位秒
-		OnConnectionUp:                onConnUp,
-		// func(cm *autopaho.ConnectionManager, connAck *paho.Connack) {
-		// 	zlog.Info("autopaho.ClientConfig", zlog.Fields{"msg": "mqtt connection up"})
-		// 	// 订阅所有主题
-		// 	for topic := range topicParamMap {
-		// 		err := SubscribeTopic(cm, topic)
-		// 		if err != nil {
-		// 			zlog.Error("SubscribeTopic", zlog.Fields{"error": err.Error()})
-		// 		}
-		// 	}
-		// 	// fmt.Println("publish: mqtt connection up")
-		// },
-
-		ConnectPacketBuilder: func(cp *paho.Connect, url *url.URL) (*paho.Connect, error) {
-			if cp.Properties == nil {
-				cp.Properties = &paho.ConnectProperties{}
-			}
-			cp.Properties.ReceiveMaximum = paho.Uint16(100) // 设置最大并发数为100
-			return cp, nil
+		KeepAlive:                     30,    // Keepalive message should be sent every 20 seconds
+		CleanStartOnInitialConnection: false, // Previous tests should not contaminate this one!
+		SessionExpiryInterval:         60,    // If connection drops we want session to remain live whilst we reconnect   客户端连接的会话过期时间，单位秒
+		OnConnectionUp: func(cm *autopaho.ConnectionManager, connAck *paho.Connack) {
+			// zlog.Info("autopaho.ClientConfig", zlog.Fields{"msg": "mqtt connection up"})
+			fmt.Println("publish: mqtt connection up")
 		},
 		OnConnectError: func(err error) {
 			fmt.Printf("publish: error whilst attempting connection: %s\n", err)
@@ -128,14 +110,12 @@ func GetMqttClient(ctx context.Context, serverURL *url.URL, onConnUp func(cm *au
 					fmt.Printf("publish: server requested disconnect; reason code: %d\n", d.ReasonCode)
 				}
 			},
-			PacketTimeout: 2 * time.Second, // 2 seconds
-			/*
-				OnPublishReceived: []func(paho.PublishReceived) (bool, error){
-					func(pr paho.PublishReceived) (bool, error) {
-						zlog.Debug("OnPublishReceived", zlog.Fields{"topic": pr.Packet.Topic, "payload": string(pr.Packet.Payload)})
-						return true, nil // we assume that the router handles all messages (todo: amend router API)
-					},
-				},*/
+			OnPublishReceived: []func(paho.PublishReceived) (bool, error){
+				func(pr paho.PublishReceived) (bool, error) {
+					router.Route(pr.Packet.Packet())
+					return true, nil // we assume that the router handles all messages (todo: amend router API)
+				},
+			},
 		},
 	}
 
