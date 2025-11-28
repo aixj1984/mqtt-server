@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sync"
 	"time"
 
 	"github.com/eclipse/paho.golang/autopaho"
+	"github.com/eclipse/paho.golang/packets"
 	"github.com/eclipse/paho.golang/paho"
 )
 
@@ -43,13 +45,48 @@ func parseTopic(topic string, pattern string) map[string]string {
 	return params
 }
 
+// 全局车辆锁映射
+var G_CarLocks = &sync.Map{}
+
+// 预编译正则表达式，避免每次调用都编译
+var carSyncRegex = regexp.MustCompile(`^/car/([^/]+)/online$`)
+
 // GetSetupFunc 获取 MQTT 连接设置函数
 func GetSetupFunc() func(*autopaho.ConnectionManager, *paho.Connack) {
 	return func(cm *autopaho.ConnectionManager, connack *paho.Connack) {
 		// 添加消息处理器
 		router := RegisterMqttHandlers(cm)
 		cm.AddOnPublishReceived(func(pr autopaho.PublishReceived) (bool, error) {
-			go router.Route(pr.Packet.Packet())
+			// 某些topic需要串行处理，例如：/user/+/+/setting, /car/+/sync
+			// 使用预编译的正则表达式匹配
+			matches := carSyncRegex.FindStringSubmatch(pr.Packet.Topic)
+			if len(matches) > 1 {
+				carId := matches[1]
+				// 获取或创建该车辆的处理通道
+				ch, exists := G_CarLocks.Load(carId)
+				if !exists {
+					newCh := make(chan *packets.Publish, 1024)
+					G_CarLocks.Store(carId, newCh)
+					ch = newCh
+					// 启动该车辆的专属顺序处理器
+					go func(cid string, messageChan chan *packets.Publish) {
+						for packet := range messageChan {
+							router.Route(packet)
+						}
+					}(carId, newCh)
+				}
+
+				// 发送消息到处理通道
+				select {
+				case ch.(chan *packets.Publish) <- pr.Packet.Packet():
+					// 成功
+				default:
+					fmt.Printf("车辆 %s 处理器繁忙，丢弃消息,topic %s", carId, pr.Packet.Topic)
+				}
+			} else {
+				// 其他topic可以异步处理
+				go router.Route(pr.Packet.Packet())
+			}
 			return true, nil
 		})
 
@@ -82,6 +119,14 @@ func RegisterMqttHandlers(mqttClient *autopaho.ConnectionManager) *paho.Standard
 	// a handler
 	router.RegisterHandler("testtopic/#", func(p *paho.Publish) {
 		fmt.Printf("testtopic/# received message with topic: %s, message : %s \n", p.Topic, string(p.Payload))
+		mqttClient.PublishViaQueue(context.Background(), &autopaho.QueuePublish{
+			Publish: &paho.Publish{
+				QoS:     1,
+				Topic:   "testtopic/response",
+				Retain:  false,
+				Payload: []byte("response to " + string(p.Payload)),
+			},
+		})
 	})
 
 	// 用户设置配置
@@ -143,8 +188,9 @@ func (h *MqttHandler) CarOnline() paho.MessageHandler {
 		params := parseTopic(p.Topic, "/car/+/online")
 		fmt.Printf("/car/+/online received message with topic: %s, message : %s, params: %v \n", p.Topic, string(p.Payload), params)
 		// 这里可以添加具体的业务逻辑
-		carId := params["carId"]
-		fmt.Printf("carId: %s\n", carId)
+		time.Sleep(10 * time.Millisecond)
+		// carId := params["carId"]
+		// fmt.Printf("carId: %s\n", carId)
 	}
 }
 
@@ -166,8 +212,9 @@ func (h *MqttHandler) CarOffline() paho.MessageHandler {
 		params := parseTopic(p.Topic, "/car/+/offline")
 		fmt.Printf("/car/+/offline received message with topic: %s, message : %s, params: %v \n", p.Topic, string(p.Payload), params)
 		// 这里可以添加具体的业务逻辑
-		carId := params["carId"]
-		fmt.Printf("carId: %s\n", carId)
+		time.Sleep(10 * time.Millisecond)
+		// carId := params["carId"]
+		// fmt.Printf("carId: %s\n", carId)
 	}
 }
 
