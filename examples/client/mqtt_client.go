@@ -96,10 +96,17 @@ func GetMqttClient(ctx context.Context, serverURL *url.URL, onConnUp func(cm *au
 		// },
 
 		ConnectPacketBuilder: func(cp *paho.Connect, url *url.URL) (*paho.Connect, error) {
+			// 设置 MQTT 协议版本: 3=MQTT 3.0, 4=MQTT 3.1.1, 5=MQTT 5.0
+			if pkt := cp.Packet(); pkt != nil {
+				pkt.ProtocolVersion = 4 // MQTT 3.1.1
+				pkt.ProtocolName = "MQTT"
+			}
+			/* MQTT 5.0 连接属性设置示例, 并发数不能太小，否则会导致连接阻塞，默认值65535
 			if cp.Properties == nil {
 				cp.Properties = &paho.ConnectProperties{}
 			}
-			cp.Properties.ReceiveMaximum = paho.Uint16(100) // 设置最大并发数为100
+			cp.Properties.ReceiveMaximum = paho.Uint16(10000) // 设置最大并发数为100
+			*/
 			return cp, nil
 		},
 		OnConnectError: func(err error) {
