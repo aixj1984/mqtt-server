@@ -1094,6 +1094,17 @@ func (s *Server) publishToClient(cl *Client, sub packets.Subscription, pk packet
 		out.PacketID = uint16(i) // [MQTT-2.2.1-4]
 		sentQuota := atomic.LoadInt32(&cl.State.Inflight.sendQuota)
 
+		maxSendQuota := atomic.LoadInt32(&cl.State.Inflight.maximumSendQuota)
+		// 检测并修复配额异常
+		if sentQuota == 0 && maxSendQuota > 0 {
+			if cl.Properties.ProtocolVersion < 5 {
+				s.Log.Warn("detected quota anomaly in MQTT 3.1.1, resetting send quota",
+					"client", cl.ID, "sentQuota", sentQuota, "maxSendQuota", maxSendQuota)
+				cl.State.Inflight.ResetSendQuota(int32(cl.ops.options.Capabilities.ReceiveMaximum))
+				sentQuota = atomic.LoadInt32(&cl.State.Inflight.sendQuota)
+			}
+		}
+
 		if len(out.TopicName) == 0 && len(pk.TopicName) > 0 && IsFixedPacketInfo {
 			// 将原始消息的关键信息复制到确认包中
 			out.Payload = pk.Payload     // 复制原始消息的 payload
@@ -1108,7 +1119,8 @@ func (s *Server) publishToClient(cl *Client, sub packets.Subscription, pk packet
 			cl.State.Inflight.DecreaseSendQuota()
 		}
 
-		if sentQuota == 0 && atomic.LoadInt32(&cl.State.Inflight.maximumSendQuota) > 0 {
+		// 仅在MQTT 5.0中使用流控制延迟机制
+		if sentQuota == 0 && maxSendQuota > 0 && cl.Properties.ProtocolVersion >= 5 {
 			out.Expiry = -1
 			cl.State.Inflight.Set(out)
 			return out, nil

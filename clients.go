@@ -228,7 +228,15 @@ func (cl *Client) ParseConnect(lid string, pk packets.Packet) {
 
 	cl.State.Keepalive = pk.Connect.Keepalive                                              // [MQTT-3.2.2-22]
 	cl.State.Inflight.ResetReceiveQuota(int32(cl.ops.options.Capabilities.ReceiveMaximum)) // server receive max per client
-	cl.State.Inflight.ResetSendQuota(int32(cl.Properties.Props.ReceiveMaximum))            // client receive max
+	// cl.State.Inflight.ResetSendQuota(int32(cl.Properties.Props.ReceiveMaximum))            // client receive max
+	// 根据协议版本设置发送配额
+	if cl.Properties.ProtocolVersion >= 5 {
+		// MQTT 5.0 使用客户端的ReceiveMaximum
+		cl.State.Inflight.ResetSendQuota(int32(cl.Properties.Props.ReceiveMaximum))
+	} else {
+		// MQTT 3.1.1 使用服务器默认配额
+		cl.State.Inflight.ResetSendQuota(int32(cl.ops.options.Capabilities.ReceiveMaximum))
+	}
 	cl.State.TopicAliases.Outbound = NewOutboundTopicAliases(cl.Properties.Props.TopicAliasMaximum)
 
 	cl.ID = pk.Connect.ClientIdentifier
