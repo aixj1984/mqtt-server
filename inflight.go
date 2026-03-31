@@ -117,8 +117,18 @@ func (i *Inflight) Delete(id uint16) bool {
 
 // TakeRecieveQuota reduces the receive quota by 1.
 func (i *Inflight) DecreaseReceiveQuota() {
-	if atomic.LoadInt32(&i.receiveQuota) > 0 {
-		atomic.AddInt32(&i.receiveQuota, -1)
+	// if atomic.LoadInt32(&i.receiveQuota) > 0 {
+	// 	atomic.AddInt32(&i.receiveQuota, -1)
+	// }
+
+	for {
+		current := atomic.LoadInt32(&i.receiveQuota)
+		if current <= 0 {
+			return
+		}
+		if atomic.CompareAndSwapInt32(&i.receiveQuota, current, current-1) {
+			return
+		}
 	}
 }
 
