@@ -97,6 +97,7 @@ func GetSetupFunc() func(*autopaho.ConnectionManager, *paho.Connack) {
 				{Topic: "/user/+/+/offline", QoS: 1, NoLocal: true},
 				{Topic: "/car/+/online", QoS: 1, NoLocal: true},
 				{Topic: "/car/+/offline", QoS: 1, NoLocal: true},
+				{Topic: "/car/+/sync", QoS: 1, NoLocal: true},
 			},
 		})
 
@@ -137,6 +138,8 @@ func RegisterMqttHandlers(mqttClient *autopaho.ConnectionManager) *paho.Standard
 	router.RegisterHandler("/user/+/+/offline", handler.UserOffline())
 	// 车辆下线
 	router.RegisterHandler("/car/+/offline", handler.CarOffline())
+
+	router.RegisterHandler("/car/+/sync", handler.CarSync())
 
 	fmt.Println("RegisterMqttHandlers success")
 	// serverCtx.MqttClient.Client.AddOnPublishReceived(func(pr autopaho.PublishReceived) (bool, error) {
@@ -211,6 +214,17 @@ func (h *MqttHandler) CarOffline() paho.MessageHandler {
 	return func(p *paho.Publish) {
 		params := parseTopic(p.Topic, "/car/+/offline")
 		fmt.Printf("/car/+/offline received message with topic: %s, message : %s, params: %v \n", p.Topic, string(p.Payload), params)
+		// 这里可以添加具体的业务逻辑
+		time.Sleep(10 * time.Millisecond)
+		// carId := params["carId"]
+		// fmt.Printf("carId: %s\n", carId)
+	}
+}
+
+func (h *MqttHandler) CarSync() paho.MessageHandler {
+	return func(p *paho.Publish) {
+		params := parseTopic(p.Topic, "/car/+/sync")
+		fmt.Printf("/car/+/sync received message with topic: %s, message : %s, params: %v \n", p.Topic, string(p.Payload), params)
 		// 这里可以添加具体的业务逻辑
 		time.Sleep(10 * time.Millisecond)
 		// carId := params["carId"]

@@ -105,8 +105,7 @@ func GetMqttClient(ctx context.Context, serverURL *url.URL, onConnUp func(cm *au
 			if cp.Properties == nil {
 				cp.Properties = &paho.ConnectProperties{}
 			}
-			cp.Properties.ReceiveMaximum = paho.Uint16(10000) // 设置最大并发数为100
-			*/
+			cp.Properties.ReceiveMaximum = paho.Uint16(100) // 设置最大并发数为100
 			return cp, nil
 		},
 		OnConnectError: func(err error) {
