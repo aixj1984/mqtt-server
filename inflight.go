@@ -115,42 +115,76 @@ func (i *Inflight) Delete(id uint16) bool {
 	return ok
 }
 
-// TakeRecieveQuota reduces the receive quota by 1.
-func (i *Inflight) DecreaseReceiveQuota() {
-	if atomic.LoadInt32(&i.receiveQuota) > 0 {
-		atomic.AddInt32(&i.receiveQuota, -1)
+// DecreaseReceiveQuota reduces the receive quota by 1.
+// Returns true if quota was successfully decreased, false if quota was already 0.
+func (i *Inflight) DecreaseReceiveQuota() bool {
+	for {
+		current := atomic.LoadInt32(&i.receiveQuota)
+		if current <= 0 {
+			return false
+		}
+		if atomic.CompareAndSwapInt32(&i.receiveQuota, current, current-1) {
+			return true
+		}
+		// CAS failed, another goroutine modified the value, retry
 	}
 }
 
-// TakeRecieveQuota increases the receive quota by 1.
-func (i *Inflight) IncreaseReceiveQuota() {
-	if atomic.LoadInt32(&i.receiveQuota) < atomic.LoadInt32(&i.maximumReceiveQuota) {
-		atomic.AddInt32(&i.receiveQuota, 1)
+// IncreaseReceiveQuota increases the receive quota by 1.
+// Returns true if quota was successfully increased, false if already at maximum.
+func (i *Inflight) IncreaseReceiveQuota() bool {
+	for {
+		current := atomic.LoadInt32(&i.receiveQuota)
+		max := atomic.LoadInt32(&i.maximumReceiveQuota)
+		if current >= max {
+			return false
+		}
+		if atomic.CompareAndSwapInt32(&i.receiveQuota, current, current+1) {
+			return true
+		}
+		// CAS failed, another goroutine modified the value, retry
 	}
 }
 
 // ResetReceiveQuota resets the receive quota to the maximum allowed value.
 func (i *Inflight) ResetReceiveQuota(n int32) {
-	atomic.StoreInt32(&i.receiveQuota, n)
 	atomic.StoreInt32(&i.maximumReceiveQuota, n)
+	atomic.StoreInt32(&i.receiveQuota, n)
 }
 
 // DecreaseSendQuota reduces the send quota by 1.
-func (i *Inflight) DecreaseSendQuota() {
-	if atomic.LoadInt32(&i.sendQuota) > 0 {
-		atomic.AddInt32(&i.sendQuota, -1)
+// Returns true if quota was successfully decreased, false if quota was already 0.
+func (i *Inflight) DecreaseSendQuota() bool {
+	for {
+		current := atomic.LoadInt32(&i.sendQuota)
+		if current <= 0 {
+			return false
+		}
+		if atomic.CompareAndSwapInt32(&i.sendQuota, current, current-1) {
+			return true
+		}
+		// CAS failed, another goroutine modified the value, retry
 	}
 }
 
 // IncreaseSendQuota increases the send quota by 1.
-func (i *Inflight) IncreaseSendQuota() {
-	if atomic.LoadInt32(&i.sendQuota) < atomic.LoadInt32(&i.maximumSendQuota) {
-		atomic.AddInt32(&i.sendQuota, 1)
+// Returns true if quota was successfully increased, false if already at maximum.
+func (i *Inflight) IncreaseSendQuota() bool {
+	for {
+		current := atomic.LoadInt32(&i.sendQuota)
+		max := atomic.LoadInt32(&i.maximumSendQuota)
+		if current >= max {
+			return false
+		}
+		if atomic.CompareAndSwapInt32(&i.sendQuota, current, current+1) {
+			return true
+		}
+		// CAS failed, another goroutine modified the value, retry
 	}
 }
 
 // ResetSendQuota resets the send quota to the maximum allowed value.
 func (i *Inflight) ResetSendQuota(n int32) {
-	atomic.StoreInt32(&i.sendQuota, n)
 	atomic.StoreInt32(&i.maximumSendQuota, n)
+	atomic.StoreInt32(&i.sendQuota, n)
 }
