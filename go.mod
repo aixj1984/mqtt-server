@@ -1,6 +1,6 @@
 module github.com/aixj1984/mqtt-server
 
-go 1.21
+go 1.25.0
 
 require (
 	github.com/alicebob/miniredis/v2 v2.23.0
@@ -8,6 +8,7 @@ require (
 	github.com/dgraph-io/badger/v4 v4.2.0
 	github.com/eclipse/paho.golang v0.22.0
 	github.com/go-redis/redis/v8 v8.11.5
+	github.com/google/uuid v1.3.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/jinzhu/copier v0.3.5
 	github.com/rs/xid v1.4.0

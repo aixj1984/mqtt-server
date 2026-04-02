@@ -79,7 +79,7 @@ func GetMqttClient(ctx context.Context, serverURL *url.URL, onConnUp func(cm *au
 	cliCfg := autopaho.ClientConfig{
 		ServerUrls:                    []*url.URL{serverURL},
 		KeepAlive:                     30,                                   // Keepalive message should be sent every 20 seconds
-		CleanStartOnInitialConnection: false,                                // Previous tests should not contaminate this one!
+		CleanStartOnInitialConnection: true,                                 // Previous tests should not contaminate this one!
 		ReconnectBackoff:              autopaho.DefaultExponentialBackoff(), // 添加指数退避策略
 		SessionExpiryInterval:         60,                                   // If connection drops we want session to remain live whilst we reconnect   客户端连接的会话过期时间，单位秒
 		OnConnectionUp:                onConnUp,
@@ -101,7 +101,6 @@ func GetMqttClient(ctx context.Context, serverURL *url.URL, onConnUp func(cm *au
 				pkt.ProtocolVersion = 4 // MQTT 3.1.1
 				pkt.ProtocolName = "MQTT"
 			}
-			/* MQTT 5.0 连接属性设置示例, 并发数不能太小，否则会导致连接阻塞，默认值65535
 			if cp.Properties == nil {
 				cp.Properties = &paho.ConnectProperties{}
 			}
