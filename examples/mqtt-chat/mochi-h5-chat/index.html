@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+    <meta name="theme-color" content="#0f1117">
+    <title>Mochi 频道聊天</title>
+    <link rel="stylesheet" href="css/app.css">
+    <script src="https://unpkg.com/openpgp@5.11.1/dist/openpgp.min.js"></script>
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+</head>
+
+<body>
+    <div id="app">
+        <!-- 登录 -->
+        <section id="screen-login" class="screen">
+            <div class="brand">
+                <div class="logo">Mochi</div>
+                <p class="tagline">频道 · 自建房 · 好友</p>
+            </div>
+            <label class="field">
+                <span>昵称（不可含冒号）</span>
+                <input type="text" id="login-nickname" placeholder="例如：小摩" maxlength="32" autocomplete="username">
+            </label>
+            <p class="hint">使用本地 Broker：<code>ws://127.0.0.1:1882</code></p>
+            <button type="button" class="btn primary" id="btn-login">进入</button>
+        </section>
+
+        <!-- 主框架 -->
+        <section id="screen-main" class="screen hidden">
+            <header class="topbar">
+                <div class="topbar-title">Mochi</div>
+                <div class="topbar-user" id="main-nickname"></div>
+            </header>
+
+            <nav class="tabs" role="tablist">
+                <button type="button" class="tab active" data-tab="channels" role="tab">频道</button>
+                <button type="button" class="tab" data-tab="friends" role="tab">好友</button>
+            </nav>
+
+            <div class="panels">
+                <div id="panel-channels" class="panel active">
+                    <div class="section">
+                        <div class="section-head">
+                            <h2>公共频道</h2>
+                            <span class="badge">可关注多个</span>
+                        </div>
+                        <ul id="list-public-channels" class="list"></ul>
+                    </div>
+                    <div class="section">
+                        <div class="section-head">
+                            <h2>我的聊天室</h2>
+                            <button type="button" class="btn small" id="btn-create-room">新建</button>
+                        </div>
+                        <ul id="list-my-rooms" class="list"></ul>
+                    </div>
+                </div>
+
+                <div id="panel-friends" class="panel">
+                    <div class="section">
+                        <div class="section-head">
+                            <h2>好友</h2>
+                        </div>
+                        <div class="row-input">
+                            <input type="text" id="friend-add-id" placeholder="输入对方昵称添加">
+                            <button type="button" class="btn small" id="btn-add-friend">添加</button>
+                        </div>
+                        <ul id="list-friends" class="list"></ul>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- 聊天页 -->
+        <section id="screen-chat" class="screen hidden">
+            <header class="chatbar">
+                <button type="button" class="iconbtn" id="btn-chat-back" aria-label="返回">←</button>
+                <div class="chatbar-info">
+                    <div class="chatbar-title" id="chat-title"></div>
+                    <div class="chatbar-sub" id="chat-sub"></div>
+                </div>
+                <button type="button" class="iconbtn" id="btn-chat-invite" aria-label="邀请">⎘</button>
+            </header>
+            <div class="chat-body">
+                <div id="chat-messages" class="messages"></div>
+            </div>
+            <div class="chat-footer">
+                <div id="emoji-panel" class="emoji-panel hidden" aria-hidden="true"></div>
+                <div class="composer-toolbar">
+                    <button type="button" class="toolbtn" id="btn-emoji" title="表情" aria-label="表情">😊</button>
+                    <button type="button" class="toolbtn" id="btn-image" title="图片" aria-label="图片">🖼</button>
+                    <button type="button" class="toolbtn voice-hold" id="btn-voice-hold" title="按住说话">按住 说话</button>
+                </div>
+                <div class="composer">
+                    <textarea id="chat-input" rows="1" placeholder="发消息…（Ctrl+Enter 发送）"></textarea>
+                    <button type="button" class="btn primary" id="btn-send">发送</button>
+                </div>
+            </div>
+            <input type="file" id="chat-image-input" class="visually-hidden" accept="image/*" tabindex="-1">
+        </section>
+
+        <div id="record-overlay" class="record-overlay hidden" aria-live="polite">
+            <div class="record-dot"></div>
+            <div class="record-time" id="record-time">30″</div>
+            <div class="record-hint">松开发送 · 上移取消</div>
+        </div>
+
+        <!-- 新建房间 -->
+        <div id="modal-room" class="modal hidden" role="dialog" aria-modal="true">
+            <div class="modal-card">
+                <h3>新建聊天室</h3>
+                <label class="field">
+                    <span>显示名称</span>
+                    <input type="text" id="room-name" placeholder="例如：项目组">
+                </label>
+                <label class="field">
+                    <span>房间 ID（可改）</span>
+                    <input type="text" id="room-id" placeholder="短英文或数字">
+                </label>
+                <label class="field">
+                    <span>共享密钥（参与者需一致）</span>
+                    <input type="text" id="room-secret" placeholder="自动生成，可修改">
+                </label>
+                <div class="modal-actions">
+                    <button type="button" class="btn" id="btn-room-cancel">取消</button>
+                    <button type="button" class="btn primary" id="btn-room-save">创建并进入</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 邀请 -->
+        <div id="modal-invite" class="modal hidden" role="dialog" aria-modal="true">
+            <div class="modal-card">
+                <h3>邀请链接</h3>
+                <p class="hint">把链接发给好友，对方打开后填入相同昵称下的房间即可加入（密钥在链接里）。</p>
+                <textarea id="invite-url" readonly rows="3"></textarea>
+                <div class="modal-actions">
+                    <button type="button" class="btn" id="btn-invite-close">关闭</button>
+                    <button type="button" class="btn primary" id="btn-invite-copy">复制</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="image-preview-overlay" class="image-preview-overlay hidden" role="dialog" aria-modal="true" aria-label="图片预览">
+            <button type="button" class="image-preview-close" id="btn-image-preview-close" aria-label="关闭">×</button>
+            <img id="image-preview-img" class="image-preview-img" src="" alt="大图预览">
+        </div>
+
+        <div id="toast" class="toast hidden"></div>
+    </div>
+
+    <script src="js/app.js"></script>
+</body>
+
+</html>
