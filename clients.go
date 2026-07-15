@@ -277,8 +277,10 @@ func (cl *Client) refreshDeadline(keepalive uint16) {
 }
 
 // NextPacketID returns the next available (unused) packet id for the client.
+// The id is atomically reserved in the Inflight map (placeholder with Expiry=-2) so a
+// concurrent publishToClient cannot be handed the same id before the caller calls Set.
 // If no unused packet ids are available, an error is returned and the client
-// should be disconnected.
+// should be disconnected. Callers that abandon the id before Set must Delete it.
 func (cl *Client) NextPacketID() (i uint32, err error) {
 	cl.Lock()
 	defer cl.Unlock()
@@ -299,7 +301,7 @@ func (cl *Client) NextPacketID() (i uint32, err error) {
 
 		i++
 
-		if _, ok := cl.State.Inflight.Get(uint16(i)); !ok {
+		if cl.State.Inflight.Reserve(uint16(i)) {
 			atomic.StoreUint32(&cl.State.packetID, i)
 			return i, nil
 		}

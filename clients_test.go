@@ -301,6 +301,10 @@ func TestClientNextPacketIDInUse(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, uint32(3), i)
 
+	// NextPacketID now reserves ids; release them so overflow wrap can reuse id 1.
+	require.True(t, cl.State.Inflight.Delete(1))
+	require.True(t, cl.State.Inflight.Delete(3))
+
 	// Skip over overflow
 	cl.State.Inflight.Set(packets.Packet{PacketID: 65535})
 	atomic.StoreUint32(&cl.State.packetID, 65534)

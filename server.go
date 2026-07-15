@@ -725,10 +725,10 @@ func (s *Server) processPacket(cl *Client, pk packets.Packet) error {
 		if ok {
 			if !cl.State.Inflight.DecreaseSendQuota() {
 				// Quota was raced away; park again for a later packet.
-				next.Expiry = -1
+				next.Expiry = InflightExpiryDeferred
 				cl.State.Inflight.Set(next)
 			} else if err = cl.WritePacket(next); err != nil {
-				next.Expiry = -1
+				next.Expiry = InflightExpiryDeferred
 				cl.State.Inflight.Set(next)
 				cl.State.Inflight.IncreaseSendQuota()
 				return err
@@ -1124,16 +1124,23 @@ func (s *Server) publishToClient(cl *Client, sub packets.Subscription, pk packet
 		// Quota must not be consumed for parked messages — otherwise a race of
 		// "stale sendQuota==0 read" + DecreaseSendQuota eating a just-freed slot leaves
 		// every entry deferred and sendQuota permanently at 0.
+		tookSendQuota := false
 		if cl.Properties.ProtocolVersion >= 5 {
 			maxSendQuota := atomic.LoadInt32(&cl.State.Inflight.maximumSendQuota)
 			if maxSendQuota > 0 && !cl.State.Inflight.DecreaseSendQuota() {
-				out.Expiry = -1
-				if ok := cl.State.Inflight.Set(out); ok {
-					atomic.AddInt64(&s.Info.Inflight, 1)
-					s.hooks.OnQosPublish(cl, out, out.Created, 0)
+				out.Expiry = InflightExpiryDeferred
+				if !cl.State.Inflight.Replace(out) {
+					cl.State.Inflight.Delete(out.PacketID)
+					atomic.AddInt64(&s.Info.InflightDropped, 1)
+					s.Log.Warn("inflight packet id collision on deferred publish",
+						"client", cl.ID, "packet_id", out.PacketID)
+					return out, packets.ErrQuotaExceeded
 				}
+				atomic.AddInt64(&s.Info.Inflight, 1)
+				s.hooks.OnQosPublish(cl, out, out.Created, 0)
 				return out, nil
 			}
+			tookSendQuota = maxSendQuota > 0
 		} else {
 			sentQuota := atomic.LoadInt32(&cl.State.Inflight.sendQuota)
 			maxSendQuota := atomic.LoadInt32(&cl.State.Inflight.maximumSendQuota)
@@ -1144,15 +1151,22 @@ func (s *Server) publishToClient(cl *Client, sub packets.Subscription, pk packet
 			}
 		}
 
-		if ok := cl.State.Inflight.Set(out); ok { // [MQTT-4.3.2-3] [MQTT-4.3.3-3]
-			atomic.AddInt64(&s.Info.Inflight, 1)
-			s.hooks.OnQosPublish(cl, out, out.Created, 0)
-			if cl.Properties.ProtocolVersion < 5 {
-				cl.State.Inflight.DecreaseSendQuota()
+		// Replace the NextPacketID reservation with the real publish. Overwriting another
+		// live QoS message must not happen when Reserve is used; treat it as a drop.
+		if !cl.State.Inflight.Replace(out) {
+			if tookSendQuota {
+				cl.State.Inflight.IncreaseSendQuota()
 			}
-		} else if cl.Properties.ProtocolVersion >= 5 {
-			// Packet ID collision / replace: roll back the quota we already took.
-			cl.State.Inflight.IncreaseSendQuota()
+			cl.State.Inflight.Delete(out.PacketID)
+			atomic.AddInt64(&s.Info.InflightDropped, 1)
+			s.Log.Warn("inflight packet id collision on publish",
+				"client", cl.ID, "packet_id", out.PacketID)
+			return out, packets.ErrQuotaExceeded
+		}
+		atomic.AddInt64(&s.Info.Inflight, 1)
+		s.hooks.OnQosPublish(cl, out, out.Created, 0)
+		if cl.Properties.ProtocolVersion < 5 {
+			cl.State.Inflight.DecreaseSendQuota()
 		}
 	}
 

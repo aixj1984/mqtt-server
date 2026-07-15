@@ -1521,7 +1521,7 @@ func TestServerProcessPacketAndNextImmediate(t *testing.T) {
 	cl, r, w := newTestClient()
 
 	next := *packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).Packet
-	next.Expiry = -1
+	next.Expiry = InflightExpiryDeferred
 	cl.State.Inflight.Set(next)
 	atomic.StoreInt64(&s.Info.Inflight, 1)
 	require.Equal(t, int64(1), atomic.LoadInt64(&s.Info.Inflight))
@@ -2383,7 +2383,7 @@ func TestMQTT5AllDeferredZeroQuotaRecoversViaSafetyValve(t *testing.T) {
 	cl.State.Inflight.sendQuota = 0
 
 	parked := *packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).Packet
-	parked.Expiry = -1
+	parked.Expiry = InflightExpiryDeferred
 	parked.PacketID = 7
 	cl.State.Inflight.Set(parked)
 	atomic.StoreInt64(&s.Info.Inflight, 1)

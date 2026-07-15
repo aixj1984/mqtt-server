@@ -52,7 +52,7 @@ func newMQTT5QuotaTestClient(receiveMaximum int32, maxInflight uint16) (cl *Clie
 				MaximumInflight:            maxInflight,
 				TopicAliasMaximum:          10000,
 				MaximumClientWritesPending: 256,
-				maximumPacketID:            1000,
+				maximumPacketID:            65535,
 			},
 		},
 	})
@@ -78,7 +78,7 @@ func publishBulkQoS1(t *testing.T, s *Server, cl *Client, n int) (sent []uint16,
 		out, err := s.publishToClient(cl, sub, pk)
 		require.NoError(t, err, "publish %d", i)
 		require.NotZero(t, out.PacketID)
-		if out.Expiry < 0 {
+		if out.Expiry == InflightExpiryDeferred {
 			parked = append(parked, out.PacketID)
 		} else {
 			sent = append(sent, out.PacketID)
@@ -89,7 +89,7 @@ func publishBulkQoS1(t *testing.T, s *Server, cl *Client, n int) (sent []uint16,
 
 func firstAckablePacketID(cl *Client) (uint16, bool) {
 	for _, pk := range cl.State.Inflight.GetAll(false) {
-		if pk.Expiry >= 0 && pk.FixedHeader.Qos > 0 {
+		if pk.Expiry != InflightExpiryDeferred && pk.Expiry != InflightExpiryReserved && pk.FixedHeader.Qos > 0 {
 			return pk.PacketID, true
 		}
 	}
@@ -98,9 +98,9 @@ func firstAckablePacketID(cl *Client) (uint16, bool) {
 
 func countDeferred(cl *Client) (deferred, sentWaitingAck int) {
 	for _, pk := range cl.State.Inflight.GetAll(false) {
-		if pk.Expiry < 0 {
+		if pk.Expiry == InflightExpiryDeferred {
 			deferred++
-		} else {
+		} else if pk.Expiry != InflightExpiryReserved {
 			sentWaitingAck++
 		}
 	}
@@ -242,7 +242,7 @@ func TestMQTT5SendQuotaDeadlock_SafetyValveUnblocksAlreadyStuckConnection(t *tes
 			TopicName:   "repro/quota",
 			Payload:     []byte(fmt.Sprintf("stuck-%d", i)),
 			Created:     int64(i + 1),
-			Expiry:      -1,
+			Expiry:      InflightExpiryDeferred,
 		}
 		cl.State.Inflight.Set(pk)
 		atomic.AddInt64(&s.Info.Inflight, 1)

@@ -11,6 +11,15 @@ import (
 	"github.com/aixj1984/mqtt-server/packets"
 )
 
+// Inflight Expiry sentinels reused for non-time-expiry flow-control states.
+const (
+	// InflightExpiryDeferred marks a QoS message parked until sendQuota is available (MQTT5).
+	InflightExpiryDeferred int64 = -1
+	// InflightExpiryReserved marks a packet ID claimed by NextPacketID before the real
+	// publish payload is written — closes the TOCTOU window between ID selection and Set.
+	InflightExpiryReserved int64 = -2
+)
+
 // Inflight is a map of InflightMessage keyed on packet id.
 type Inflight struct {
 	sync.RWMutex
@@ -37,6 +46,37 @@ func (i *Inflight) Set(m packets.Packet) bool {
 	_, ok := i.internal[m.PacketID]
 	i.internal[m.PacketID] = m
 	return !ok
+}
+
+// Reserve atomically claims a free packet id with a placeholder entry.
+// Returns false if the id is already present (including a prior reservation).
+func (i *Inflight) Reserve(id uint16) bool {
+	i.Lock()
+	defer i.Unlock()
+
+	if _, ok := i.internal[id]; ok {
+		return false
+	}
+	i.internal[id] = packets.Packet{
+		PacketID: id,
+		Expiry:   InflightExpiryReserved,
+	}
+	return true
+}
+
+// Replace stores the real packet over a previously Reserved id (or inserts if absent).
+// Returns false only when overwriting a non-reserved existing message — that indicates a
+// serious accounting bug and the caller must not treat the message as successfully stored.
+func (i *Inflight) Replace(m packets.Packet) bool {
+	i.Lock()
+	defer i.Unlock()
+
+	old, ok := i.internal[m.PacketID]
+	i.internal[m.PacketID] = m
+	if !ok {
+		return true
+	}
+	return old.Expiry == InflightExpiryReserved
 }
 
 // Get returns an inflight packet by packet id.
@@ -77,7 +117,7 @@ func (i *Inflight) GetAll(immediate bool) []packets.Packet {
 
 	m := []packets.Packet{}
 	for _, v := range i.internal {
-		if !immediate || (immediate && v.Expiry < 0) {
+		if !immediate || v.Expiry == InflightExpiryDeferred {
 			m = append(m, v)
 		}
 	}
@@ -104,7 +144,7 @@ func (i *Inflight) NextImmediate() (packets.Packet, bool) {
 	return packets.Packet{}, false
 }
 
-// TakeNextImmediate selects the next deferred (Expiry < 0) packet and clears the deferred
+// TakeNextImmediate selects the next deferred (Expiry=-1) packet and clears the deferred
 // marker so it will not be selected again. The packet remains in the inflight map until the
 // client acknowledges it. Returns false if there is no deferred packet.
 func (i *Inflight) TakeNextImmediate() (packets.Packet, bool) {
@@ -115,7 +155,7 @@ func (i *Inflight) TakeNextImmediate() (packets.Packet, bool) {
 	var selectedID uint16
 	found := false
 	for id, v := range i.internal {
-		if v.Expiry >= 0 {
+		if v.Expiry != InflightExpiryDeferred {
 			continue
 		}
 		if !found || uint16(v.Created) < uint16(selected.Created) {
@@ -135,14 +175,14 @@ func (i *Inflight) TakeNextImmediate() (packets.Packet, bool) {
 }
 
 // RecoverStarvedSendQuota restores one send quota unit when every inflight packet is still
-// deferred (Expiry < 0) and sendQuota has reached 0. This is unreachable with correct
+// deferred (Expiry=-1) and sendQuota has reached 0. This is unreachable with correct
 // accounting, but recovers connections that entered the historical "all deferred, zero quota"
 // deadlock without requiring a reconnect.
 func (i *Inflight) RecoverStarvedSendQuota() bool {
 	i.RLock()
 	allDeferred := len(i.internal) > 0
 	for _, v := range i.internal {
-		if v.Expiry >= 0 {
+		if v.Expiry != InflightExpiryDeferred {
 			allDeferred = false
 			break
 		}
