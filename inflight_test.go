@@ -197,3 +197,44 @@ func TestNextImmediate(t *testing.T) {
 	_, ok = cl.State.Inflight.NextImmediate()
 	require.False(t, ok)
 }
+
+func TestTakeNextImmediate(t *testing.T) {
+	cl, _, _ := newTestClient()
+	cl.State.Inflight.Set(packets.Packet{PacketID: 1, Created: 1})
+	cl.State.Inflight.Set(packets.Packet{PacketID: 3, Created: 3, Expiry: -1})
+	cl.State.Inflight.Set(packets.Packet{PacketID: 4, Created: 4, Expiry: -1})
+
+	pk, ok := cl.State.Inflight.TakeNextImmediate()
+	require.True(t, ok)
+	require.Equal(t, uint16(3), pk.PacketID)
+	require.Equal(t, int64(0), pk.Expiry)
+
+	stored, ok := cl.State.Inflight.Get(3)
+	require.True(t, ok)
+	require.Equal(t, int64(0), stored.Expiry)
+	require.Equal(t, 3, cl.State.Inflight.Len())
+
+	pk, ok = cl.State.Inflight.TakeNextImmediate()
+	require.True(t, ok)
+	require.Equal(t, uint16(4), pk.PacketID)
+
+	_, ok = cl.State.Inflight.TakeNextImmediate()
+	require.False(t, ok)
+}
+
+func TestRecoverStarvedSendQuota(t *testing.T) {
+	cl, _, _ := newTestClient()
+	cl.State.Inflight.ResetSendQuota(5)
+	cl.State.Inflight.sendQuota = 0
+	cl.State.Inflight.Set(packets.Packet{PacketID: 1, Created: 1, Expiry: -1})
+	cl.State.Inflight.Set(packets.Packet{PacketID: 2, Created: 2, Expiry: -1})
+
+	require.True(t, cl.State.Inflight.RecoverStarvedSendQuota())
+	require.Equal(t, int32(1), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
+	require.False(t, cl.State.Inflight.RecoverStarvedSendQuota())
+
+	cl.State.Inflight.sendQuota = 0
+	cl.State.Inflight.Set(packets.Packet{PacketID: 3, Created: 3}) // actually sent
+	require.False(t, cl.State.Inflight.RecoverStarvedSendQuota())
+	require.Equal(t, int32(0), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
+}

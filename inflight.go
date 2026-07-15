@@ -104,6 +104,63 @@ func (i *Inflight) NextImmediate() (packets.Packet, bool) {
 	return packets.Packet{}, false
 }
 
+// TakeNextImmediate selects the next deferred (Expiry < 0) packet and clears the deferred
+// marker so it will not be selected again. The packet remains in the inflight map until the
+// client acknowledges it. Returns false if there is no deferred packet.
+func (i *Inflight) TakeNextImmediate() (packets.Packet, bool) {
+	i.Lock()
+	defer i.Unlock()
+
+	var selected packets.Packet
+	var selectedID uint16
+	found := false
+	for id, v := range i.internal {
+		if v.Expiry >= 0 {
+			continue
+		}
+		if !found || uint16(v.Created) < uint16(selected.Created) {
+			selected = v
+			selectedID = id
+			found = true
+		}
+	}
+	if !found {
+		return packets.Packet{}, false
+	}
+
+	// Clear deferred marker; keep packet until PUBACK/PUBCOMP restores send quota.
+	selected.Expiry = 0
+	i.internal[selectedID] = selected
+	return selected, true
+}
+
+// RecoverStarvedSendQuota restores one send quota unit when every inflight packet is still
+// deferred (Expiry < 0) and sendQuota has reached 0. This is unreachable with correct
+// accounting, but recovers connections that entered the historical "all deferred, zero quota"
+// deadlock without requiring a reconnect.
+func (i *Inflight) RecoverStarvedSendQuota() bool {
+	i.RLock()
+	allDeferred := len(i.internal) > 0
+	for _, v := range i.internal {
+		if v.Expiry >= 0 {
+			allDeferred = false
+			break
+		}
+	}
+	i.RUnlock()
+	if !allDeferred {
+		return false
+	}
+
+	i.quotaMu.Lock()
+	defer i.quotaMu.Unlock()
+	if i.sendQuota > 0 || i.maximumSendQuota == 0 {
+		return false
+	}
+	i.sendQuota = 1
+	return true
+}
+
 // Delete removes an in-flight message from the map. Returns true if the message existed.
 func (i *Inflight) Delete(id uint16) bool {
 	i.Lock()

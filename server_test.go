@@ -1536,8 +1536,13 @@ func TestServerProcessPacketAndNextImmediate(t *testing.T) {
 	buf, err := io.ReadAll(r)
 	require.NoError(t, err)
 	require.Equal(t, packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).RawBytes, buf)
-	require.Equal(t, int64(0), atomic.LoadInt64(&s.Info.Inflight))
+	// Deferred packet must remain inflight until PUBACK restores send quota.
+	require.Equal(t, int64(1), atomic.LoadInt64(&s.Info.Inflight))
+	require.Equal(t, 1, cl.State.Inflight.Len())
 	require.Equal(t, int32(4), cl.State.Inflight.sendQuota)
+	pk, ok := cl.State.Inflight.Get(next.PacketID)
+	require.True(t, ok)
+	require.GreaterOrEqual(t, pk.Expiry, int64(0))
 }
 
 func TestServerProcessPublishAckFailure(t *testing.T) {
@@ -2300,6 +2305,103 @@ func TestPublishToSubscribersExhaustedSendQuota(t *testing.T) {
 	s.publishToSubscribers(pkx)
 	time.Sleep(time.Millisecond)
 	_ = w.Close()
+}
+
+// TestMQTT5DeferredSendQuotaRecoversOnPuback covers the historical deadlock:
+// sendQuota reaches 0, further QoS1 publishes are parked with Expiry=-1, and after
+// the last in-flight PUBACK the broker must still be able to resume parked messages
+// while keeping them in Inflight so subsequent PUBACK can restore sendQuota.
+func TestMQTT5DeferredSendQuotaRecoversOnPuback(t *testing.T) {
+	s := newServer()
+	cl, r, w := newTestClient()
+	cl.Properties.ProtocolVersion = 5
+	cl.State.Inflight.ResetSendQuota(1)
+	s.Clients.Add(cl)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = io.Copy(io.Discard, r)
+	}()
+
+	sub := packets.Subscription{Filter: "a/b/c", Qos: 1}
+	pk1 := *packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).Packet
+	pk1.PacketID = 0
+	out1, err := s.publishToClient(cl, sub, pk1)
+	require.NoError(t, err)
+	require.NotZero(t, out1.PacketID)
+	require.Equal(t, int32(0), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
+	require.Equal(t, 1, cl.State.Inflight.Len())
+
+	// Quota exhausted: further messages must be parked, not sent on the wire path.
+	pk2 := *packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).Packet
+	pk2.PacketID = 0
+	pk2.Payload = []byte("parked")
+	out2, err := s.publishToClient(cl, sub, pk2)
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), out2.Expiry)
+	require.Equal(t, int32(0), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
+	require.Equal(t, 2, cl.State.Inflight.Len())
+	parked, ok := cl.State.Inflight.Get(out2.PacketID)
+	require.True(t, ok)
+	require.Equal(t, int64(-1), parked.Expiry)
+
+	// PUBACK for the first message restores quota and resumes the parked one.
+	err = s.processPacket(cl, packets.Packet{
+		FixedHeader: packets.FixedHeader{Type: packets.Puback},
+		PacketID:    out1.PacketID,
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, cl.State.Inflight.Len())
+	require.Equal(t, int32(0), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
+	stored, ok := cl.State.Inflight.Get(out2.PacketID)
+	require.True(t, ok)
+	require.GreaterOrEqual(t, stored.Expiry, int64(0))
+
+	// PUBACK for the resumed packet must restore sendQuota (no permanent leak).
+	err = s.processPacket(cl, packets.Packet{
+		FixedHeader: packets.FixedHeader{Type: packets.Puback},
+		PacketID:    out2.PacketID,
+	})
+	require.NoError(t, err)
+	require.Equal(t, 0, cl.State.Inflight.Len())
+	require.Equal(t, int32(1), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
+
+	_ = w.Close()
+	<-done
+}
+
+// TestMQTT5AllDeferredZeroQuotaRecoversViaSafetyValve ensures a connection that already
+// entered the historical deadlock (sendQuota=0 and only Expiry=-1 entries) can resume
+// without reconnecting, once any inbound packet is processed.
+func TestMQTT5AllDeferredZeroQuotaRecoversViaSafetyValve(t *testing.T) {
+	s := newServer()
+	cl, r, w := newTestClient()
+	cl.Properties.ProtocolVersion = 5
+	cl.State.Inflight.ResetSendQuota(2)
+	cl.State.Inflight.sendQuota = 0
+
+	parked := *packets.TPacketData[packets.Publish].Get(packets.TPublishQos1).Packet
+	parked.Expiry = -1
+	parked.PacketID = 7
+	cl.State.Inflight.Set(parked)
+	atomic.StoreInt64(&s.Info.Inflight, 1)
+
+	go func() {
+		err := s.processPacket(cl, packets.Packet{FixedHeader: packets.FixedHeader{Type: packets.Pingreq}})
+		require.NoError(t, err)
+		_ = w.Close()
+	}()
+
+	buf, err := io.ReadAll(r)
+	require.NoError(t, err)
+	require.NotEmpty(t, buf)
+	require.Equal(t, 1, cl.State.Inflight.Len())
+	stored, ok := cl.State.Inflight.Get(7)
+	require.True(t, ok)
+	require.GreaterOrEqual(t, stored.Expiry, int64(0))
+	require.Equal(t, int32(0), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
 }
 
 func TestPublishToSubscribersExhaustedPacketIDs(t *testing.T) {

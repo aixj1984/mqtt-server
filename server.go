@@ -716,14 +716,33 @@ func (s *Server) processPacket(cl *Client, pk packets.Packet) error {
 		return err
 	}
 
+	// Resume MQTT v5 deferred sends. Previously this path deleted the packet from Inflight
+	// after WritePacket, so the client's PUBACK could never restore sendQuota — once every
+	// actually-sent packet was acked, sendQuota stayed 0 forever with only Expiry=-1 entries left.
+	cl.State.Inflight.RecoverStarvedSendQuota()
 	if cl.State.Inflight.Len() > 0 && atomic.LoadInt32(&cl.State.Inflight.sendQuota) > 0 {
-		next, ok := cl.State.Inflight.NextImmediate()
+		next, ok := cl.State.Inflight.TakeNextImmediate()
 		if ok {
-			_ = cl.WritePacket(next)
-			if ok := cl.State.Inflight.Delete(next.PacketID); ok {
-				atomic.AddInt64(&s.Info.Inflight, -1)
+			if !cl.State.Inflight.DecreaseSendQuota() {
+				// Quota was raced away; park again for a later packet.
+				next.Expiry = -1
+				cl.State.Inflight.Set(next)
+			} else if err = cl.WritePacket(next); err != nil {
+				next.Expiry = -1
+				cl.State.Inflight.Set(next)
+				cl.State.Inflight.IncreaseSendQuota()
+				return err
 			}
-			cl.State.Inflight.DecreaseSendQuota()
+		}
+	}
+
+	// With an empty inflight window there is nothing awaiting ACK, so sendQuota must equal
+	// the client's Receive Maximum. This also heals residual under-count after safety-valve recovery.
+	if cl.State.Inflight.Len() == 0 {
+		if max := atomic.LoadInt32(&cl.State.Inflight.maximumSendQuota); max > 0 {
+			if atomic.LoadInt32(&cl.State.Inflight.sendQuota) != max {
+				cl.State.Inflight.ResetSendQuota(max)
+			}
 		}
 	}
 
@@ -1092,18 +1111,6 @@ func (s *Server) publishToClient(cl *Client, sub packets.Subscription, pk packet
 		}
 
 		out.PacketID = uint16(i) // [MQTT-2.2.1-4]
-		sentQuota := atomic.LoadInt32(&cl.State.Inflight.sendQuota)
-
-		maxSendQuota := atomic.LoadInt32(&cl.State.Inflight.maximumSendQuota)
-		// 检测并修复配额异常
-		if sentQuota == 0 && maxSendQuota > 0 {
-			if cl.Properties.ProtocolVersion < 5 {
-				s.Log.Warn("detected quota anomaly in MQTT 3.1.1, resetting send quota",
-					"client", cl.ID, "sentQuota", sentQuota, "maxSendQuota", maxSendQuota)
-				cl.State.Inflight.ResetSendQuota(int32(cl.ops.options.Capabilities.ReceiveMaximum))
-				sentQuota = atomic.LoadInt32(&cl.State.Inflight.sendQuota)
-			}
-		}
 
 		if len(out.TopicName) == 0 && len(pk.TopicName) > 0 && IsFixedPacketInfo {
 			// 将原始消息的关键信息复制到确认包中
@@ -1113,17 +1120,39 @@ func (s *Server) publishToClient(cl *Client, sub packets.Subscription, pk packet
 			// out.FixedHeader = pk.FixedHeader
 		}
 
+		// MQTT 5.0 Receive Maximum: only park (Expiry=-1) when we cannot take send quota.
+		// Quota must not be consumed for parked messages — otherwise a race of
+		// "stale sendQuota==0 read" + DecreaseSendQuota eating a just-freed slot leaves
+		// every entry deferred and sendQuota permanently at 0.
+		if cl.Properties.ProtocolVersion >= 5 {
+			maxSendQuota := atomic.LoadInt32(&cl.State.Inflight.maximumSendQuota)
+			if maxSendQuota > 0 && !cl.State.Inflight.DecreaseSendQuota() {
+				out.Expiry = -1
+				if ok := cl.State.Inflight.Set(out); ok {
+					atomic.AddInt64(&s.Info.Inflight, 1)
+					s.hooks.OnQosPublish(cl, out, out.Created, 0)
+				}
+				return out, nil
+			}
+		} else {
+			sentQuota := atomic.LoadInt32(&cl.State.Inflight.sendQuota)
+			maxSendQuota := atomic.LoadInt32(&cl.State.Inflight.maximumSendQuota)
+			if sentQuota == 0 && maxSendQuota > 0 {
+				s.Log.Warn("detected quota anomaly in MQTT 3.1.1, resetting send quota",
+					"client", cl.ID, "sentQuota", sentQuota, "maxSendQuota", maxSendQuota)
+				cl.State.Inflight.ResetSendQuota(int32(cl.ops.options.Capabilities.ReceiveMaximum))
+			}
+		}
+
 		if ok := cl.State.Inflight.Set(out); ok { // [MQTT-4.3.2-3] [MQTT-4.3.3-3]
 			atomic.AddInt64(&s.Info.Inflight, 1)
 			s.hooks.OnQosPublish(cl, out, out.Created, 0)
-			cl.State.Inflight.DecreaseSendQuota()
-		}
-
-		// 仅在MQTT 5.0中使用流控制延迟机制
-		if sentQuota == 0 && maxSendQuota > 0 && cl.Properties.ProtocolVersion >= 5 {
-			out.Expiry = -1
-			cl.State.Inflight.Set(out)
-			return out, nil
+			if cl.Properties.ProtocolVersion < 5 {
+				cl.State.Inflight.DecreaseSendQuota()
+			}
+		} else if cl.Properties.ProtocolVersion >= 5 {
+			// Packet ID collision / replace: roll back the quota we already took.
+			cl.State.Inflight.IncreaseSendQuota()
 		}
 	}
 
