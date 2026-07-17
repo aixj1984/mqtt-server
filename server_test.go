@@ -1819,7 +1819,10 @@ func TestServerProcessPacketPublishQos1PacketIDInUse(t *testing.T) {
 	buf, err := io.ReadAll(r)
 	require.NoError(t, err)
 	require.Equal(t, packets.TPacketData[packets.Puback].Get(packets.TPuback).RawBytes, buf)
-	require.Equal(t, int64(0), atomic.LoadInt64(&s.Info.Inflight))
+	// QoS1 inbound must not delete outbound Inflight (PacketIDs are not shared across directions).
+	require.Equal(t, int64(1), atomic.LoadInt64(&s.Info.Inflight))
+	_, ok := cl.State.Inflight.Get(7)
+	require.True(t, ok)
 }
 
 func TestServerProcessPacketPublishQos2PacketIDInUse(t *testing.T) {
@@ -2553,7 +2556,8 @@ func TestServerProcessPacketPuback(t *testing.T) {
 			err := s.processPacket(cl, *tx.in.Packet)
 			require.NoError(t, err)
 
-			require.Equal(t, int32(4), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
+			// Inflight empty → sendQuota healed back to maximumSendQuota (5 from newTestClient).
+			require.Equal(t, int32(5), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
 			require.Equal(t, int32(3), atomic.LoadInt32(&cl.State.Inflight.receiveQuota))
 
 			require.Equal(t, int64(0), atomic.LoadInt64(&s.Info.Inflight))
@@ -2573,7 +2577,8 @@ func TestServerProcessPacketPubackNoPacketID(t *testing.T) {
 	err := s.processPacket(cl, pk)
 	require.NoError(t, err)
 
-	require.Equal(t, int32(3), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
+	// No matching inflight; empty map heal restores sendQuota to maximum (5).
+	require.Equal(t, int32(5), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
 	require.Equal(t, int32(3), atomic.LoadInt32(&cl.State.Inflight.receiveQuota))
 }
 
@@ -2628,7 +2633,8 @@ func TestServerProcessPacketPubrecNoPacketID(t *testing.T) {
 
 	require.Equal(t, packets.TPacketData[packets.Pubrel].Get(packets.TPubrelMqtt5AckNoPacket).RawBytes, <-recv)
 
-	require.Equal(t, int32(3), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
+	// Empty inflight → resumeDeferredPublishes heals sendQuota back to maximumSendQuota (5).
+	require.Equal(t, int32(5), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
 	require.Equal(t, int32(3), atomic.LoadInt32(&cl.State.Inflight.receiveQuota))
 }
 
@@ -2677,7 +2683,8 @@ func TestServerProcessPacketPubrel(t *testing.T) {
 	_ = w.Close()
 
 	require.Equal(t, int32(4), atomic.LoadInt32(&cl.State.Inflight.receiveQuota))
-	require.Equal(t, int32(4), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
+	// After last Inflight delete, resumeDeferredPublishes resets sendQuota to maximumSendQuota (5).
+	require.Equal(t, int32(5), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
 
 	require.Equal(t, packets.TPacketData[packets.Pubcomp].Get(packets.TPubcomp).RawBytes, <-recv)
 
@@ -2707,7 +2714,7 @@ func TestServerProcessPacketPubrelNoPacketID(t *testing.T) {
 
 	require.Equal(t, packets.TPacketData[packets.Pubcomp].Get(packets.TPubcompMqtt5AckNoPacket).RawBytes, <-recv)
 
-	require.Equal(t, int32(3), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
+	require.Equal(t, int32(5), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
 	require.Equal(t, int32(3), atomic.LoadInt32(&cl.State.Inflight.receiveQuota))
 }
 
@@ -2763,7 +2770,7 @@ func TestServerProcessPacketPubcomp(t *testing.T) {
 			require.Equal(t, int64(0), atomic.LoadInt64(&s.Info.Inflight))
 
 			require.Equal(t, int32(4), atomic.LoadInt32(&cl.State.Inflight.receiveQuota))
-			require.Equal(t, int32(4), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
+			require.Equal(t, int32(5), atomic.LoadInt32(&cl.State.Inflight.sendQuota))
 
 			_, ok := cl.State.Inflight.Get(pID)
 			require.False(t, ok)
@@ -2788,7 +2795,7 @@ func TestServerProcessInboundQos2Flow(t *testing.T) {
 			in:              packets.TPacketData[packets.Pubrel].Get(packets.TPubrel),
 			out:             packets.TPacketData[packets.Pubcomp].Get(packets.TPubcomp),
 			data: map[string]any{
-				"sendquota": int32(4),
+				"sendquota": int32(5), // empty inflight → ResetSendQuotaIfEmpty heals to maximumSendQuota
 				"recvquota": int32(3),
 				"inflight":  int64(0),
 			},
@@ -2859,7 +2866,7 @@ func TestServerProcessOutboundQos2Flow(t *testing.T) {
 			protocolVersion: 5,
 			in:              packets.TPacketData[packets.Pubcomp].Get(packets.TPubcomp),
 			data: map[string]any{
-				"sendquota": int32(3),
+				"sendquota": int32(5), // empty inflight → healed to maximumSendQuota
 				"recvquota": int32(3),
 				"inflight":  int64(0),
 			},
@@ -3635,8 +3642,8 @@ func TestServerClearExpiredInflights(t *testing.T) {
 	cl, _, _ := newTestClient()
 	cl.ops.info = s.Info
 
-	cl.State.Inflight.Set(packets.Packet{PacketID: 1, Expiry: n - 1})
-	cl.State.Inflight.Set(packets.Packet{PacketID: 2, Expiry: n - 2})
+	cl.State.Inflight.Set(packets.Packet{PacketID: 1, ProtocolVersion: 5, Expiry: n - 1})
+	cl.State.Inflight.Set(packets.Packet{PacketID: 2, ProtocolVersion: 5, Expiry: n - 2})
 	cl.State.Inflight.Set(packets.Packet{PacketID: 3, Created: n - 3}) // within bounds
 	cl.State.Inflight.Set(packets.Packet{PacketID: 5, Created: n - 5}) // over max server expiry limit
 	cl.State.Inflight.Set(packets.Packet{PacketID: 7, Created: n})
@@ -3649,6 +3656,7 @@ func TestServerClearExpiredInflights(t *testing.T) {
 	require.Equal(t, int64(-3), s.Info.Inflight)
 
 	s.Options.Capabilities.MaximumMessageExpiryInterval = 0
+	// No ProtocolVersion 5: Expiry timestamp alone must not purge (v3 / non-MQTT5 behaviour).
 	cl.State.Inflight.Set(packets.Packet{PacketID: 8, Expiry: n - 8})
 	s.clearExpiredInflights(n)
 	require.Len(t, cl.State.Inflight.GetAll(false), 3)

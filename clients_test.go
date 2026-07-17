@@ -151,7 +151,7 @@ func TestClientParseConnect(t *testing.T) {
 	cl, _, _ := newTestClient()
 
 	pk := packets.Packet{
-		ProtocolVersion: 4,
+		ProtocolVersion: 5,
 		Connect: packets.ConnectParams{
 			ProtocolName:     []byte{'M', 'Q', 'T', 'T'},
 			Clean:            true,
@@ -190,7 +190,7 @@ func TestClientParseConnectReceiveMaxExceedMaxInflight(t *testing.T) {
 	cl.ops.options.Capabilities.MaximumInflight = MaxInflight
 
 	pk := packets.Packet{
-		ProtocolVersion: 4,
+		ProtocolVersion: 5,
 		Connect: packets.ConnectParams{
 			ProtocolName:     []byte{'M', 'Q', 'T', 'T'},
 			Clean:            true,
@@ -359,6 +359,23 @@ func TestClientClearInflights(t *testing.T) {
 	require.Equal(t, 0, cl.State.Inflight.Len())
 }
 
+func TestClientClearInflightsSkipsReservedInInfoGauge(t *testing.T) {
+	cl, _, _ := newTestClient()
+	require.True(t, cl.State.Inflight.Reserve(1))
+	cl.State.Inflight.Set(packets.Packet{
+		FixedHeader: packets.FixedHeader{Type: packets.Publish, Qos: 1},
+		PacketID:    2,
+		TopicName:   "t",
+	})
+	// Only the real publish was counted in Info.Inflight — not the reserved placeholder.
+	atomic.StoreInt64(&cl.ops.info.Inflight, 1)
+
+	cl.ClearInflights()
+	require.Equal(t, 0, cl.State.Inflight.Len())
+	require.Equal(t, int64(0), atomic.LoadInt64(&cl.ops.info.Inflight),
+		"clearing reserved must not drive Info.Inflight negative")
+}
+
 func TestClientClearExpiredInflights(t *testing.T) {
 	cl, _, _ := newTestClient()
 
@@ -382,20 +399,22 @@ func TestClientClearExpiredInflights(t *testing.T) {
 	require.Equal(t, 6, cl.State.Inflight.Len())
 
 	deleted = cl.ClearExpiredInflights(n, 4)
-	require.Len(t, deleted, 3)
-	require.ElementsMatch(t, []uint16{11, 12, 15}, deleted)
-	require.Equal(t, 3, cl.State.Inflight.Len())
+	// v3 packets with Expiry set but Created=0 must NOT be swept (Created=0 used to
+	// spuriously match enforced expiry and could delete reserved placeholders).
+	require.Len(t, deleted, 1)
+	require.ElementsMatch(t, []uint16{15}, deleted)
+	require.Equal(t, 5, cl.State.Inflight.Len())
 
 	cl.State.Inflight.Set(packets.Packet{PacketID: 17, Created: n - 1})
 	deleted = cl.ClearExpiredInflights(n, 0) // maximumExpiry = 0 do not process abandon messages
 	require.Len(t, deleted, 0)
-	require.Equal(t, 4, cl.State.Inflight.Len())
+	require.Equal(t, 6, cl.State.Inflight.Len())
 
 	cl.State.Inflight.Set(packets.Packet{ProtocolVersion: 5, PacketID: 18, Expiry: n - 1})
 	deleted = cl.ClearExpiredInflights(n, 0)        // maximumExpiry = 0 do not abandon messages
 	require.ElementsMatch(t, []uint16{18}, deleted) // expiry is still effective for v5.
 	require.Len(t, deleted, 1)
-	require.Equal(t, 4, cl.State.Inflight.Len())
+	require.Equal(t, 6, cl.State.Inflight.Len())
 }
 
 func TestClientResendInflightMessages(t *testing.T) {

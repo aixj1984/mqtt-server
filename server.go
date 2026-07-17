@@ -391,6 +391,7 @@ func (s *Server) eventLoop() {
 			s.sendDelayedLWT(time.Now().Unix())
 		case <-s.loop.inflightExpiry.C:
 			s.clearExpiredInflights(time.Now().Unix())
+			s.resumeAllDeferredPublishes()
 		}
 	}
 }
@@ -572,9 +573,15 @@ func (s *Server) inheritClientSession(pk packets.Packet, cl *Client) bool {
 		existing.State.isTakenOver.Store(true)
 		if existing.State.Inflight.Len() > 0 {
 			cl.State.Inflight = existing.State.Inflight.Clone() // [MQTT-3.1.2-5]
-			if cl.State.Inflight.maximumReceiveQuota == 0 && cl.ops.options.Capabilities.ReceiveMaximum != 0 {
-				cl.State.Inflight.ResetReceiveQuota(int32(cl.ops.options.Capabilities.ReceiveMaximum)) // server receive max per client
-				cl.State.Inflight.ResetSendQuota(int32(cl.Properties.Props.ReceiveMaximum))            // client receive max
+			// Clone already recalculates sendQuota from remaining messages. Align the
+			// maximum with this connection's ReceiveMaximum without resetting to full.
+			newMax := int32(cl.Properties.Props.ReceiveMaximum)
+			if newMax == 0 {
+				newMax = int32(s.Options.Capabilities.ReceiveMaximum)
+			}
+			cl.State.Inflight.ReconcileSendQuotaCap(newMax)
+			if _, _, _, _, maxRecv := cl.State.Inflight.QuotaStats(); maxRecv == 0 && cl.ops.options.Capabilities.ReceiveMaximum != 0 {
+				cl.State.Inflight.ResetReceiveQuota(int32(cl.ops.options.Capabilities.ReceiveMaximum))
 			}
 		}
 
@@ -589,7 +596,10 @@ func (s *Server) inheritClientSession(pk packets.Packet, cl *Client) bool {
 		// Clean the state of the existing client to prevent sequential take-overs
 		// from increasing memory usage by inflights + subs * client-id.
 		s.UnsubscribeClient(existing)
-		existing.ClearInflights()
+		// Ownership of Inflight entries moved via Clone — do NOT ClearInflights() here.
+		// ClearInflights decrements Info.Inflight, but the messages still live on `cl`;
+		// their later PUBACK would decrement again and drive the gauge negative.
+		existing.ResetInflights()
 
 		s.Log.Debug("session taken over", "client", cl.ID, "old_remote", existing.Net.Remote, "new_remote", cl.Net.Remote)
 
@@ -716,36 +726,43 @@ func (s *Server) processPacket(cl *Client, pk packets.Packet) error {
 		return err
 	}
 
-	// Resume MQTT v5 deferred sends. Previously this path deleted the packet from Inflight
-	// after WritePacket, so the client's PUBACK could never restore sendQuota — once every
-	// actually-sent packet was acked, sendQuota stayed 0 forever with only Expiry=-1 entries left.
+	return s.resumeDeferredPublishes(cl)
+}
+
+// resumeDeferredPublishes sends as many Expiry=-1 parked publishes as current sendQuota
+// allows. Must run whenever sendQuota is restored (PUBACK, expiry cleanup, etc.), not only
+// once per inbound packet — otherwise deferred backlogs sit forever after the client goes idle.
+func (s *Server) resumeDeferredPublishes(cl *Client) error {
 	cl.State.Inflight.RecoverStarvedSendQuota()
-	if cl.State.Inflight.Len() > 0 && atomic.LoadInt32(&cl.State.Inflight.sendQuota) > 0 {
+
+	for atomic.LoadInt32(&cl.State.Inflight.sendQuota) > 0 {
 		next, ok := cl.State.Inflight.TakeNextImmediate()
-		if ok {
-			if !cl.State.Inflight.DecreaseSendQuota() {
-				// Quota was raced away; park again for a later packet.
-				next.Expiry = InflightExpiryDeferred
-				cl.State.Inflight.Set(next)
-			} else if err = cl.WritePacket(next); err != nil {
-				next.Expiry = InflightExpiryDeferred
-				cl.State.Inflight.Set(next)
-				cl.State.Inflight.IncreaseSendQuota()
-				return err
-			}
+		if !ok {
+			break
+		}
+		if !cl.State.Inflight.DecreaseSendQuota() {
+			next.Expiry = InflightExpiryDeferred
+			cl.State.Inflight.Set(next)
+			break
+		}
+		if cl.Net.Conn == nil || cl.Closed() {
+			next.Expiry = InflightExpiryDeferred
+			cl.State.Inflight.Set(next)
+			cl.State.Inflight.IncreaseSendQuota()
+			break
+		}
+
+		pk := next
+		if err := cl.WritePacket(pk); err != nil {
+			pk.Expiry = InflightExpiryDeferred
+			cl.State.Inflight.Set(pk)
+			cl.State.Inflight.IncreaseSendQuota()
+			cl.State.Inflight.ResetSendQuotaIfEmpty()
+			return err
 		}
 	}
 
-	// With an empty inflight window there is nothing awaiting ACK, so sendQuota must equal
-	// the client's Receive Maximum. This also heals residual under-count after safety-valve recovery.
-	if cl.State.Inflight.Len() == 0 {
-		if max := atomic.LoadInt32(&cl.State.Inflight.maximumSendQuota); max > 0 {
-			if atomic.LoadInt32(&cl.State.Inflight.sendQuota) != max {
-				cl.State.Inflight.ResetSendQuota(max)
-			}
-		}
-	}
-
+	cl.State.Inflight.ResetSendQuotaIfEmpty()
 	return nil
 }
 
@@ -915,9 +932,10 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 				ack := s.buildAck(pk.PacketID, packets.Pubrec, 0, pk.Properties, packets.ErrPacketIdentifierInUse)
 				return cl.WritePacket(ack)
 			}
-			if ok := cl.State.Inflight.Delete(pk.PacketID); ok { // [MQTT-4.3.2-5]
-				atomic.AddInt64(&s.Info.Inflight, -1)
-			}
+			// Inflight is shared between outbound (server→client) and inbound QoS2 state.
+			// MQTT allows both directions to use the same PacketID independently. Never
+			// delete outbound Publish / deferred / reserved entries on inbound PUBLISH —
+			// that silently drops messages and leaks sendQuota (packetid-clash race).
 		}
 	}
 
@@ -971,9 +989,24 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 		// ack.FixedHeader = pk.FixedHeader // 复制原始消息的 fixedheader
 	}
 
-	if ok := cl.State.Inflight.Set(ack); ok {
-		atomic.AddInt64(&s.Info.Inflight, 1)
-		s.hooks.OnQosPublish(cl, ack, ack.Created, 0)
+	// QoS2 inbound state is stored in Inflight. QoS1 must NOT Set/Delete here: the map is
+	// also used for outbound publishes, and MQTT allows both directions to reuse PacketIDs.
+	// The old Set(ack)+Delete(ack) path overwrote and removed outbound entries (sendQuota leak).
+	if pk.FixedHeader.Qos == 2 {
+		if existing, ok := cl.State.Inflight.Get(pk.PacketID); ok {
+			if existing.FixedHeader.Type == packets.Publish ||
+				existing.FixedHeader.Type == packets.Pubrec ||
+				existing.Expiry == InflightExpiryDeferred ||
+				existing.Expiry == InflightExpiryReserved {
+				ack = s.buildAck(pk.PacketID, packets.Pubrec, 0, pk.Properties, packets.ErrPacketIdentifierInUse)
+				cl.State.Inflight.IncreaseReceiveQuota()
+				return cl.WritePacket(ack)
+			}
+		}
+		if ok := cl.State.Inflight.Set(ack); ok {
+			atomic.AddInt64(&s.Info.Inflight, 1)
+			s.hooks.OnQosPublish(cl, ack, ack.Created, 0)
+		}
 	}
 
 	err = cl.WritePacket(ack)
@@ -982,9 +1015,6 @@ func (s *Server) processPublish(cl *Client, pk packets.Packet) error {
 	}
 
 	if pk.FixedHeader.Qos == 1 {
-		if ok := cl.State.Inflight.Delete(ack.PacketID); ok {
-			atomic.AddInt64(&s.Info.Inflight, -1)
-		}
 		cl.State.Inflight.IncreaseReceiveQuota()
 		if len(ack.Payload) == 0 {
 			ack.Payload = pk.Payload     // 复制原始消息的 payload
@@ -1095,18 +1125,13 @@ func (s *Server) publishToClient(cl *Client, sub packets.Subscription, pk packet
 	}
 
 	if out.FixedHeader.Qos > 0 {
-		if cl.State.Inflight.Len() >= int(s.Options.Capabilities.MaximumInflight) {
-			// add hook?
-			atomic.AddInt64(&s.Info.InflightDropped, 1)
-			s.Log.Warn("client store quota reached", "client", cl.ID, "listener", cl.Net.Listener)
-			return out, packets.ErrQuotaExceeded
-		}
-
-		i, err := cl.NextPacketID() // [MQTT-4.3.2-1] [MQTT-4.3.3-1]
+		maxInflight := int(s.Options.Capabilities.MaximumInflight)
+		i, err := cl.NextPacketIDUnderCap(maxInflight) // [MQTT-4.3.2-1] [MQTT-4.3.3-1]
 		if err != nil {
 			s.hooks.OnPacketIDExhausted(cl, pk)
 			atomic.AddInt64(&s.Info.InflightDropped, 1)
-			s.Log.Warn("packet ids exhausted", "error", err, "client", cl.ID, "listener", cl.Net.Listener)
+			s.Log.Warn("client store quota reached or packet ids exhausted",
+				"error", err, "client", cl.ID, "listener", cl.Net.Listener)
 			return out, packets.ErrQuotaExceeded
 		}
 
@@ -1129,15 +1154,16 @@ func (s *Server) publishToClient(cl *Client, sub packets.Subscription, pk packet
 			maxSendQuota := atomic.LoadInt32(&cl.State.Inflight.maximumSendQuota)
 			if maxSendQuota > 0 && !cl.State.Inflight.DecreaseSendQuota() {
 				out.Expiry = InflightExpiryDeferred
-				if !cl.State.Inflight.Replace(out) {
+				if !cl.State.Inflight.ReplaceCounted(out, &s.Info.Inflight) {
 					cl.State.Inflight.Delete(out.PacketID)
 					atomic.AddInt64(&s.Info.InflightDropped, 1)
 					s.Log.Warn("inflight packet id collision on deferred publish",
 						"client", cl.ID, "packet_id", out.PacketID)
 					return out, packets.ErrQuotaExceeded
 				}
-				atomic.AddInt64(&s.Info.Inflight, 1)
 				s.hooks.OnQosPublish(cl, out, out.Created, 0)
+				// Opportunistic flush if sendQuota was freed concurrently while we parked.
+				_ = s.resumeDeferredPublishes(cl)
 				return out, nil
 			}
 			tookSendQuota = maxSendQuota > 0
@@ -1153,7 +1179,7 @@ func (s *Server) publishToClient(cl *Client, sub packets.Subscription, pk packet
 
 		// Replace the NextPacketID reservation with the real publish. Overwriting another
 		// live QoS message must not happen when Reserve is used; treat it as a drop.
-		if !cl.State.Inflight.Replace(out) {
+		if !cl.State.Inflight.ReplaceCounted(out, &s.Info.Inflight) {
 			if tookSendQuota {
 				cl.State.Inflight.IncreaseSendQuota()
 			}
@@ -1163,7 +1189,6 @@ func (s *Server) publishToClient(cl *Client, sub packets.Subscription, pk packet
 				"client", cl.ID, "packet_id", out.PacketID)
 			return out, packets.ErrQuotaExceeded
 		}
-		atomic.AddInt64(&s.Info.Inflight, 1)
 		s.hooks.OnQosPublish(cl, out, out.Created, 0)
 		if cl.Properties.ProtocolVersion < 5 {
 			cl.State.Inflight.DecreaseSendQuota()
@@ -1171,6 +1196,12 @@ func (s *Server) publishToClient(cl *Client, sub packets.Subscription, pk packet
 	}
 
 	if cl.Net.Conn == nil || cl.Closed() {
+		if out.FixedHeader.Qos > 0 && out.PacketID > 0 {
+			if ok := cl.State.Inflight.Delete(out.PacketID); ok {
+				atomic.AddInt64(&s.Info.Inflight, -1)
+				cl.State.Inflight.IncreaseSendQuota()
+			}
+		}
 		return out, packets.CodeDisconnect
 	}
 
@@ -1181,8 +1212,10 @@ func (s *Server) publishToClient(cl *Client, sub packets.Subscription, pk packet
 		atomic.AddInt64(&s.Info.MessagesDropped, 1)
 		cl.ops.hooks.OnPublishDropped(cl, pk)
 		if out.FixedHeader.Qos > 0 {
-			cl.State.Inflight.Delete(out.PacketID) // packet was dropped due to irregular circumstances, so rollback inflight.
-			cl.State.Inflight.IncreaseSendQuota()
+			if ok := cl.State.Inflight.Delete(out.PacketID); ok {
+				atomic.AddInt64(&s.Info.Inflight, -1)
+				cl.State.Inflight.IncreaseSendQuota()
+			}
 		}
 		return out, packets.ErrPendingClientWritesExceeded
 	}
@@ -1247,18 +1280,21 @@ func (s *Server) processPuback(cl *Client, pk packets.Packet) error {
 	}
 
 	if ok := cl.State.Inflight.Delete(pk.PacketID); ok { // [MQTT-4.3.2-5]
-		cl.State.Inflight.IncreaseSendQuota()
-		atomic.AddInt64(&s.Info.Inflight, -1)
+		// Reserved ids were never sent and never incremented Info.Inflight.
+		if inflightPk.Expiry != InflightExpiryReserved {
+			cl.State.Inflight.IncreaseSendQuota()
+			atomic.AddInt64(&s.Info.Inflight, -1)
 
-		if len(pk.TopicName) == 0 && len(inflightPk.TopicName) > 0 && IsFixedPacketInfo {
-			// 将原始消息的关键信息复制到确认包中
-			pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
-			pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
-			pk.Origin = inflightPk.Origin       // 复制原始消息的 origin
-			// pk.FixedHeader = inflightPk.FixedHeader
+			if len(pk.TopicName) == 0 && len(inflightPk.TopicName) > 0 && IsFixedPacketInfo {
+				// 将原始消息的关键信息复制到确认包中
+				pk.Payload = inflightPk.Payload     // 复制原始消息的 payload
+				pk.TopicName = inflightPk.TopicName // 复制原始消息的 topic
+				pk.Origin = inflightPk.Origin       // 复制原始消息的 origin
+				// pk.FixedHeader = inflightPk.FixedHeader
+			}
+
+			s.hooks.OnQosComplete(cl, pk)
 		}
-
-		s.hooks.OnQosComplete(cl, pk)
 	}
 
 	return nil
@@ -1890,6 +1926,23 @@ func (s *Server) clearExpiredInflights(now int64) {
 			for _, id := range deleted {
 				s.hooks.OnQosDropped(client, packets.Packet{PacketID: id})
 			}
+			// Expiry restores sendQuota; flush any deferred publishes that can now go out.
+			_ = s.resumeDeferredPublishes(client)
+		}
+	}
+}
+
+// resumeAllDeferredPublishes opportunistically drains deferred (Expiry=-1) publishes for
+// every client that has spare sendQuota. Covers the idle-client case where no inbound
+// packet would otherwise trigger resumeDeferredPublishes.
+func (s *Server) resumeAllDeferredPublishes() {
+	for _, cl := range s.Clients.GetAll() {
+		if cl.Closed() || cl.Net.Conn == nil {
+			continue
+		}
+		_, deferred, _, sendQ, _, _, _ := cl.State.Inflight.QuotaStatsDetailed()
+		if deferred > 0 && sendQ > 0 {
+			_ = s.resumeDeferredPublishes(cl)
 		}
 	}
 }

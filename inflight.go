@@ -7,6 +7,8 @@ package mqtt
 import (
 	"sort"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/aixj1984/mqtt-server/packets"
 )
@@ -18,6 +20,15 @@ const (
 	// InflightExpiryReserved marks a packet ID claimed by NextPacketID before the real
 	// publish payload is written — closes the TOCTOU window between ID selection and Set.
 	InflightExpiryReserved int64 = -2
+)
+
+// reserveResult is the outcome of TryReserve.
+type reserveResult int
+
+const (
+	reserveOK reserveResult = iota
+	reserveIDTaken
+	reserveFull
 )
 
 // Inflight is a map of InflightMessage keyed on packet id.
@@ -51,32 +62,51 @@ func (i *Inflight) Set(m packets.Packet) bool {
 // Reserve atomically claims a free packet id with a placeholder entry.
 // Returns false if the id is already present (including a prior reservation).
 func (i *Inflight) Reserve(id uint16) bool {
+	return i.TryReserve(id, 0) == reserveOK
+}
+
+// TryReserve claims id if free. When max > 0, also requires len(internal) < max so
+// MaximumInflight checks cannot race with concurrent publishers (Len-then-Reserve TOCTOU).
+func (i *Inflight) TryReserve(id uint16, max int) reserveResult {
 	i.Lock()
 	defer i.Unlock()
 
+	if max > 0 && len(i.internal) >= max {
+		return reserveFull
+	}
 	if _, ok := i.internal[id]; ok {
-		return false
+		return reserveIDTaken
 	}
 	i.internal[id] = packets.Packet{
 		PacketID: id,
 		Expiry:   InflightExpiryReserved,
+		Created:  time.Now().Unix(),
 	}
-	return true
+	return reserveOK
 }
 
 // Replace stores the real packet over a previously Reserved id (or inserts if absent).
 // Returns false only when overwriting a non-reserved existing message — that indicates a
 // serious accounting bug and the caller must not treat the message as successfully stored.
 func (i *Inflight) Replace(m packets.Packet) bool {
+	return i.ReplaceCounted(m, nil)
+}
+
+// ReplaceCounted is Replace, and when gauge != nil increments it atomically under the same
+// lock so ClearInflights cannot observe an uncounted real entry (Replace-then-+1 TOCTOU).
+func (i *Inflight) ReplaceCounted(m packets.Packet, gauge *int64) bool {
 	i.Lock()
 	defer i.Unlock()
 
 	old, ok := i.internal[m.PacketID]
-	i.internal[m.PacketID] = m
-	if !ok {
-		return true
+	if ok && old.Expiry != InflightExpiryReserved {
+		return false
 	}
-	return old.Expiry == InflightExpiryReserved
+	i.internal[m.PacketID] = m
+	if gauge != nil {
+		atomic.AddInt64(gauge, 1)
+	}
+	return true
 }
 
 // Get returns an inflight packet by packet id.
@@ -98,16 +128,66 @@ func (i *Inflight) Len() int {
 	return len(i.internal)
 }
 
-// Clone returns a new instance of Inflight with the same message data.
-// This is used when transferring inflights from a taken-over session.
+// Clone returns a new instance of Inflight with the same message data and recalculated quotas.
+// Send quota is restored as maxSend - count(non-deferred, non-reserved QoS messages) so session
+// takeover cannot reset to a full window while unacked outbound messages remain.
 func (i *Inflight) Clone() *Inflight {
 	c := NewInflights()
 	i.RLock()
-	defer i.RUnlock()
+	sentHoldingQuota := 0
 	for k, v := range i.internal {
 		c.internal[k] = v
+		if v.Expiry != InflightExpiryDeferred && v.Expiry != InflightExpiryReserved && v.FixedHeader.Qos > 0 {
+			sentHoldingQuota++
+		}
 	}
+	i.RUnlock()
+
+	i.quotaMu.Lock()
+	maxSend := i.maximumSendQuota
+	maxRecv := i.maximumReceiveQuota
+	recv := i.receiveQuota
+	i.quotaMu.Unlock()
+
+	c.quotaMu.Lock()
+	c.maximumSendQuota = maxSend
+	c.maximumReceiveQuota = maxRecv
+	c.receiveQuota = recv
+	if maxSend > 0 {
+		left := maxSend - int32(sentHoldingQuota)
+		if left < 0 {
+			left = 0
+		}
+		c.sendQuota = left
+	}
+	c.quotaMu.Unlock()
 	return c
+}
+
+// ReconcileSendQuotaCap updates maximumSendQuota and recomputes sendQuota from current
+// non-deferred/non-reserved QoS entries. Used after session takeover when the new CONNECT
+// advertises a different ReceiveMaximum.
+func (i *Inflight) ReconcileSendQuotaCap(max int32) {
+	i.RLock()
+	sentHoldingQuota := 0
+	for _, v := range i.internal {
+		if v.Expiry != InflightExpiryDeferred && v.Expiry != InflightExpiryReserved && v.FixedHeader.Qos > 0 {
+			sentHoldingQuota++
+		}
+	}
+	i.RUnlock()
+
+	i.quotaMu.Lock()
+	defer i.quotaMu.Unlock()
+	if max <= 0 {
+		return
+	}
+	i.maximumSendQuota = max
+	left := max - int32(sentHoldingQuota)
+	if left < 0 {
+		left = 0
+	}
+	i.sendQuota = left
 }
 
 // GetAll returns all the inflight messages.
@@ -133,9 +213,6 @@ func (i *Inflight) GetAll(immediate bool) []packets.Packet {
 // This typically occurs when the quota has been exhausted, and we need to wait until new quota
 // is free to continue sending.
 func (i *Inflight) NextImmediate() (packets.Packet, bool) {
-	i.RLock()
-	defer i.RUnlock()
-
 	m := i.GetAll(true)
 	if len(m) > 0 {
 		return m[0], true
@@ -179,17 +256,16 @@ func (i *Inflight) TakeNextImmediate() (packets.Packet, bool) {
 // accounting, but recovers connections that entered the historical "all deferred, zero quota"
 // deadlock without requiring a reconnect.
 func (i *Inflight) RecoverStarvedSendQuota() bool {
-	i.RLock()
-	allDeferred := len(i.internal) > 0
+	i.Lock()
+	defer i.Unlock()
+
+	if len(i.internal) == 0 {
+		return false
+	}
 	for _, v := range i.internal {
 		if v.Expiry != InflightExpiryDeferred {
-			allDeferred = false
-			break
+			return false
 		}
-	}
-	i.RUnlock()
-	if !allDeferred {
-		return false
 	}
 
 	i.quotaMu.Lock()
@@ -198,6 +274,28 @@ func (i *Inflight) RecoverStarvedSendQuota() bool {
 		return false
 	}
 	i.sendQuota = 1
+	return true
+}
+
+// ResetSendQuotaIfEmpty sets sendQuota to maximumSendQuota only when the inflight map is
+// still empty. Holding the map lock closes the race where a concurrent publish Reserves an
+// id and Decreases sendQuota, then this heal path would overwrite it back to max.
+func (i *Inflight) ResetSendQuotaIfEmpty() bool {
+	i.Lock()
+	defer i.Unlock()
+	if len(i.internal) != 0 {
+		return false
+	}
+
+	i.quotaMu.Lock()
+	defer i.quotaMu.Unlock()
+	if i.maximumSendQuota <= 0 {
+		return false
+	}
+	if i.sendQuota == i.maximumSendQuota {
+		return false
+	}
+	i.sendQuota = i.maximumSendQuota
 	return true
 }
 
@@ -280,4 +378,35 @@ func (i *Inflight) ResetSendQuota(n int32) {
 
 	i.maximumSendQuota = n
 	i.sendQuota = n
+}
+
+// QuotaStats returns a point-in-time snapshot of inflight length and flow-control quotas.
+// Intended for diagnostics / race-repro demos (not on the hot path).
+func (i *Inflight) QuotaStats() (length int, sendQuota, maxSendQuota, receiveQuota, maxReceiveQuota int32) {
+	i.RLock()
+	length = len(i.internal)
+	i.RUnlock()
+
+	i.quotaMu.Lock()
+	defer i.quotaMu.Unlock()
+	return length, i.sendQuota, i.maximumSendQuota, i.receiveQuota, i.maximumReceiveQuota
+}
+
+// QuotaStatsDetailed returns QuotaStats plus deferred/reserved entry counts.
+func (i *Inflight) QuotaStatsDetailed() (length, deferred, reserved int, sendQuota, maxSendQuota, receiveQuota, maxReceiveQuota int32) {
+	i.RLock()
+	length = len(i.internal)
+	for _, v := range i.internal {
+		switch v.Expiry {
+		case InflightExpiryDeferred:
+			deferred++
+		case InflightExpiryReserved:
+			reserved++
+		}
+	}
+	i.RUnlock()
+
+	i.quotaMu.Lock()
+	defer i.quotaMu.Unlock()
+	return length, deferred, reserved, i.sendQuota, i.maximumSendQuota, i.receiveQuota, i.maximumReceiveQuota
 }

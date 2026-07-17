@@ -483,11 +483,13 @@ func (h *Hooks) OnQosComplete(cl *Client, pk packets.Packet) {
 // inflight message from a store.
 func (h *Hooks) OnQosDropped(cl *Client, pk packets.Packet) {
 	// Try to get original message info if available
-	if inflightPk, ok := cl.State.Inflight.Get(pk.PacketID); ok {
-		// Copy original message info to the packet
-		pk.Payload = inflightPk.Payload
-		pk.TopicName = inflightPk.TopicName
-		pk.Origin = inflightPk.Origin
+	if cl != nil && cl.State.Inflight != nil {
+		if inflightPk, ok := cl.State.Inflight.Get(pk.PacketID); ok {
+			// Copy original message info to the packet
+			pk.Payload = inflightPk.Payload
+			pk.TopicName = inflightPk.TopicName
+			pk.Origin = inflightPk.Origin
+		}
 	}
 
 	for _, hook := range h.GetAll() {

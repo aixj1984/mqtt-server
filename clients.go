@@ -282,6 +282,16 @@ func (cl *Client) refreshDeadline(keepalive uint16) {
 // If no unused packet ids are available, an error is returned and the client
 // should be disconnected. Callers that abandon the id before Set must Delete it.
 func (cl *Client) NextPacketID() (i uint32, err error) {
+	return cl.nextPacketID(0)
+}
+
+// NextPacketIDUnderCap is like NextPacketID but also enforces MaximumInflight atomically
+// with the reservation (closes Len-then-Reserve TOCTOU).
+func (cl *Client) NextPacketIDUnderCap(max int) (i uint32, err error) {
+	return cl.nextPacketID(max)
+}
+
+func (cl *Client) nextPacketID(max int) (i uint32, err error) {
 	cl.Lock()
 	defer cl.Unlock()
 
@@ -301,9 +311,14 @@ func (cl *Client) NextPacketID() (i uint32, err error) {
 
 		i++
 
-		if cl.State.Inflight.Reserve(uint16(i)) {
+		switch cl.State.Inflight.TryReserve(uint16(i), max) {
+		case reserveOK:
 			atomic.StoreUint32(&cl.State.packetID, i)
 			return i, nil
+		case reserveFull:
+			return 0, packets.ErrQuotaExceeded
+		case reserveIDTaken:
+			// try next id
 		}
 	}
 }
@@ -315,6 +330,10 @@ func (cl *Client) ResendInflightMessages(force bool) error {
 	}
 
 	for _, tk := range cl.State.Inflight.GetAll(false) {
+		// Skip flow-control placeholders and deferred (not yet sent) messages.
+		if tk.Expiry == InflightExpiryDeferred || tk.Expiry == InflightExpiryReserved {
+			continue
+		}
 		if tk.FixedHeader.Type == packets.Publish {
 			tk.FixedHeader.Dup = true // [MQTT-3.3.1-1] [MQTT-3.3.1-3]
 		}
@@ -341,8 +360,21 @@ func (cl *Client) ClearInflights() {
 	for _, tk := range cl.State.Inflight.GetAll(false) {
 		if ok := cl.State.Inflight.Delete(tk.PacketID); ok {
 			cl.ops.hooks.OnQosDropped(cl, tk)
-			atomic.AddInt64(&cl.ops.info.Inflight, -1)
+			// Reserved placeholders are never counted in Info.Inflight (only Replace/Set of a
+			// real QoS message increments). Decrementing them here drives the gauge negative
+			// under Reserve↔disconnect races.
+			if tk.Expiry != InflightExpiryReserved {
+				atomic.AddInt64(&cl.ops.info.Inflight, -1)
+			}
 		}
+	}
+}
+
+// ResetInflights drops all inflight entries without adjusting Info.Inflight or QoS hooks.
+// Used after Inflight.Clone() transfers ownership to a new connection (session takeover).
+func (cl *Client) ResetInflights() {
+	for _, tk := range cl.State.Inflight.GetAll(false) {
+		cl.State.Inflight.Delete(tk.PacketID)
 	}
 }
 
@@ -350,14 +382,24 @@ func (cl *Client) ClearInflights() {
 func (cl *Client) ClearExpiredInflights(now, maximumExpiry int64) []uint16 {
 	deleted := []uint16{}
 	for _, tk := range cl.State.Inflight.GetAll(false) {
+		// Never expire flow-control sentinels; Created=0 reserved placeholders must not
+		// be swept by the maximumExpiry enforcement path.
+		if tk.Expiry == InflightExpiryDeferred || tk.Expiry == InflightExpiryReserved {
+			continue
+		}
+
 		expired := tk.ProtocolVersion == 5 && tk.Expiry > 0 && tk.Expiry < now // [MQTT-3.3.2-5]
 
 		// If the maximum message expiry interval is set (greater than 0), and the message
 		// retention period exceeds the maximum expiry, the message will be forcibly removed.
-		enforced := maximumExpiry > 0 && now-tk.Created > maximumExpiry
+		enforced := maximumExpiry > 0 && tk.Created > 0 && now-tk.Created > maximumExpiry
 
 		if expired || enforced {
 			if ok := cl.State.Inflight.Delete(tk.PacketID); ok {
+				// Sent (non-deferred) QoS messages consumed sendQuota — restore it.
+				if tk.FixedHeader.Qos > 0 {
+					cl.State.Inflight.IncreaseSendQuota()
+				}
 				cl.ops.hooks.OnQosDropped(cl, tk)
 				atomic.AddInt64(&cl.ops.info.Inflight, -1)
 				deleted = append(deleted, tk.PacketID)
